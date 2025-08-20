@@ -66,4 +66,182 @@ def load_submitted_user_ids() -> set[int]:
                 for row in reader:
                     uid_str = row.get("discord_user_id")
                     if uid_str and uid_str.isdigit():
-                        id
+                        ids.add(int(uid_str))
+        except Exception as e:
+            print("CSV load error:", e)
+    return ids
+
+def append_submission(discord_user_id: int, email: str, player_id: str):
+    new_file = not SAVE_PATH.exists()
+    with SAVE_PATH.open("a", newline="") as f:
+        w = csv.writer(f)
+        if new_file:
+            w.writerow(["discord_user_id", "email", "player_id"])
+        w.writerow([discord_user_id, email, player_id])
+
+# ===== Bot & Intents =====
+intents = discord.Intents.default()
+intents.members = True
+intents.message_content = True  # prefix komutları için gerekli
+bot = commands.Bot(command_prefix="!", intents=intents)
+submitted_users: set[int] = set()
+
+# Tek bir guild’e hızlı kayıt için Object
+GOBJ = discord.Object(id=GUILD_ID)
+
+# ===== View (REGISTER button) =====
+class RegisterView(discord.ui.View):
+    def __init__(self, timeout=None):
+        super().__init__(timeout=timeout)
+
+    @discord.ui.button(label=BTN_LABEL, style=discord.ButtonStyle.primary, custom_id="rr_register_btn")
+    async def register_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        user = interaction.user
+        print("Button click from:", user, user.id)
+
+        if user.id in submitted_users:
+            await interaction.response.send_message(EPHEM_ALREADY, ephemeral=True)
+            return
+
+        try:
+            dm = await user.create_dm()
+            await dm.send(DM_GREETING)
+        except Exception as e:
+            print("DM open error:", e)
+            await interaction.response.send_message(EPHEM_OPEN_DM, ephemeral=True)
+            return
+
+        await interaction.response.send_message("I've sent you a DM. Please check your inbox.", ephemeral=True)
+
+        def check(m: discord.Message):
+            return m.author.id == user.id and isinstance(m.channel, discord.DMChannel)
+
+        attempts = 3
+        while attempts > 0:
+            try:
+                msg: discord.Message = await bot.wait_for("message", check=check, timeout=120)
+            except asyncio.TimeoutError:
+                try:
+                    await dm.send(DM_TIMEOUT)
+                except Exception:
+                    pass
+                return
+
+            content = msg.content.strip().replace("\n", " ")
+            parts = content.split()
+            if len(parts) != 2:
+                try: await dm.send(DM_HINT)
+                except: pass
+                attempts -= 1
+                continue
+
+            email, player_id = parts[0].strip(), parts[1].strip()
+
+            if not EMAIL_RE.fullmatch(email):
+                try: await dm.send(DM_INVALID_EMAIL)
+                except: pass
+                attempts -= 1; continue
+
+            if not player_id.isdigit():
+                try: await dm.send(DM_INVALID_DIGITS)
+                except: pass
+                attempts -= 1; continue
+
+            if len(player_id) != EXACT_DIGITS:
+                try: await dm.send(DM_INVALID_LENGTH)
+                except: pass
+                attempts -= 1; continue
+
+            # valid
+            submitted_users.add(user.id)
+            try:
+                append_submission(user.id, email, player_id)
+            except Exception as e:
+                print("CSV append error:", e)
+
+            guild = bot.get_guild(GUILD_ID)
+            if guild:
+                log_ch = guild.get_channel(LOG_CHANNEL_ID)
+                if log_ch:
+                    try:
+                        emb = discord.Embed(title="New Submission", color=0x3498DB)
+                        emb.add_field(name="Discord", value=f"{user} (`{user.id}`)", inline=False)
+                        emb.add_field(name="Email", value=email, inline=True)
+                        emb.add_field(name="Player ID", value=player_id, inline=True)
+                        await log_ch.send(embed=emb)
+                    except Exception as e:
+                        print("Log embed error:", e)
+                        await log_ch.send(f"<@{user.id}> email `{email}` | player id `{player_id}`")
+
+            try:
+                emb_ok = discord.Embed(description=DM_SUCCESS, color=COLOR_OK)
+                emb_ok.set_author(name=f"{BRAND} Verify")
+                emb_ok.add_field(name="Email", value=email, inline=True)
+                emb_ok.add_field(name="Player ID", value=f"`{player_id}`", inline=True)
+                await dm.send(embed=emb_ok)
+            except Exception as e:
+                print("DM ok embed error:", e)
+            return
+
+        try:
+            await dm.send("Too many invalid attempts. Please click REGISTER again to restart.")
+        except:
+            pass
+
+# ===== Prefix commands =====
+@bot.command(name="ping")
+async def ping_prefix(ctx: commands.Context):
+    print("!ping from", ctx.author, "in", ctx.channel)
+    await ctx.reply("Pong!", delete_after=5)
+
+@bot.command(name="setup_register")
+@commands.has_permissions(administrator=True)
+async def setup_register_prefix(ctx: commands.Context):
+    print("!setup_register from", ctx.author, "in", ctx.channel)
+    if ctx.guild is None or ctx.guild.id != GUILD_ID:
+        await ctx.reply("Wrong guild.", delete_after=5); return
+    ch = ctx.guild.get_channel(REGISTER_POST_CHANNEL_ID)
+    if not ch:
+        await ctx.reply("REGISTER_POST_CHANNEL_ID not found.", delete_after=5); return
+    emb = discord.Embed(title=POST_TITLE, description=POST_DESC, color=0x5865F2)
+    await ch.send(embed=emb, view=RegisterView())
+    await ctx.reply("Register post sent.", delete_after=5)
+
+# ===== Slash commands (guild-bound) =====
+@bot.tree.command(name="ping", description="Health check", guild=GOBJ)
+async def ping_slash(interaction: discord.Interaction):
+    print("/ping by", interaction.user)
+    await interaction.response.send_message("Pong!", ephemeral=True)
+
+@bot.tree.command(name="setup_register", description="Post the REGISTER button (admin only)", guild=GOBJ)
+@app_commands.checks.has_permissions(administrator=True)
+async def setup_register_slash(interaction: discord.Interaction):
+    print("/setup_register by", interaction.user)
+    if interaction.guild_id != GUILD_ID:
+        await interaction.response.send_message("Wrong guild.", ephemeral=True); return
+    guild = interaction.guild
+    ch = guild.get_channel(REGISTER_POST_CHANNEL_ID) if guild else None
+    if not ch:
+        await interaction.response.send_message("REGISTER_POST_CHANNEL_ID not found.", ephemeral=True); return
+    emb = discord.Embed(title=POST_TITLE, description=POST_DESC, color=0x5865F2)
+    await ch.send(embed=emb, view=RegisterView())
+    await interaction.response.send_message("Register post sent.", ephemeral=True)
+
+# ===== on_ready =====
+@bot.event
+async def on_ready():
+    global submitted_users
+    submitted_users = load_submitted_user_ids()
+    print(f"✅ Logged in as {bot.user} | Loaded {len(submitted_users)} submissions from CSV")
+
+    # keep button alive across restarts
+    bot.add_view(RegisterView())
+
+    # fast sync to guild
+    try:
+        synced = await bot.tree.sync(guild=GOBJ)
+        print(f"Slash synced for guild {GUILD_ID}: {len(synced)} cmd(s)")
+    except Exception as e:
+        print("Slash sync error:", e)
+
+bot.run(TOKEN)
