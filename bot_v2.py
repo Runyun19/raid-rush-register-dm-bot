@@ -206,6 +206,52 @@ async def setup_register_prefix(ctx: commands.Context):
     emb = discord.Embed(title=POST_TITLE, description=POST_DESC, color=0x5865F2)
     await ch.send(embed=emb, view=RegisterView())
     await ctx.reply("Register post sent.", delete_after=5)
+      # == helpers: remove from CSV ==
+def remove_submission_row(discord_user_id: int) -> bool:
+    if not SAVE_PATH.exists():
+        return False
+    changed = False
+    rows = []
+    with SAVE_PATH.open("r", newline="") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            uid = r.get("discord_user_id", "")
+            if uid and uid.isdigit() and int(uid) == discord_user_id:
+                changed = True
+                continue
+            rows.append(r)
+    if changed:
+        with SAVE_PATH.open("w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["discord_user_id", "email", "player_id"])
+            w.writeheader()
+            for r in rows:
+                w.writerow(r)
+    return changed
+
+@bot.command(name="reset_user")
+@commands.has_permissions(administrator=True)
+async def reset_user(ctx: commands.Context, user_id_or_mention: str):
+    """Admin: allow a user to re-submit (by ID or mention). Usage: !reset_user 123456789012345678"""
+    uid = None
+    if user_id_or_mention.isdigit():
+        uid = int(user_id_or_mention)
+    else:
+        try:
+            uid = int(user_id_or_mention.replace("<@", "").replace(">", "").replace("!", ""))
+        except:
+            uid = None
+    if uid is None:
+        await ctx.reply("Provide a valid user ID or mention.", delete_after=8)
+        return
+
+    removed_csv = remove_submission_row(uid)
+    submitted_users.discard(uid)
+    await ctx.reply(f"Reset done for `<@{uid}>` (csv_removed={removed_csv}).", delete_after=8)
+
+@bot.command(name="sub_count")
+@commands.has_permissions(administrator=True)
+async def sub_count(ctx: commands.Context):
+    await ctx.reply(f"Currently stored submissions in memory: **{len(submitted_users)}**", delete_after=8)
 
 # ===== Slash commands (guild-bound) =====
 @bot.tree.command(name="ping", description="Health check", guild=GOBJ)
