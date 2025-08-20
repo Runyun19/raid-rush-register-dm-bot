@@ -1,9 +1,10 @@
 import os, re, csv, asyncio, discord
 from pathlib import Path
 from discord.ext import commands
+from discord import app_commands
 from dotenv import load_dotenv
 
-# === load secrets from .env ===
+# === load secrets from .env / Railway ===
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
@@ -73,13 +74,15 @@ def append_submission(discord_user_id: int, email: str, player_id: str):
             w.writerow(["discord_user_id", "email", "player_id"])
         w.writerow([discord_user_id, email, player_id])
 
-# === bot ===
+# === bot & intents ===
 intents = discord.Intents.default()
 intents.members = True
+intents.message_content = True  # IMPORTANT: enable to read prefix commands
+
 bot = commands.Bot(command_prefix="!", intents=intents)
+submitted_users: set[int] = set()  # loaded on_ready
 
-submitted_users: set[int] = set()  # loaded from CSV on_ready
-
+# ---------- UI View with Button ----------
 class RegisterView(discord.ui.View):
     def __init__(self, timeout=None):
         super().__init__(timeout=timeout)
@@ -192,14 +195,17 @@ class RegisterView(discord.ui.View):
         except:
             pass
 
+# ---------- PREFIX command ----------
 @bot.command(name="setup_register")
 @commands.has_permissions(administrator=True)
-async def setup_register(ctx: commands.Context):
+async def setup_register_prefix(ctx: commands.Context):
+    print("!setup_register called by", ctx.author, "in", ctx.channel)  # debug log
     if ctx.guild is None or ctx.guild.id != GUILD_ID:
+        await ctx.reply("Wrong guild.", delete_after=5)
         return
     ch = ctx.guild.get_channel(REGISTER_POST_CHANNEL_ID)
     if not ch:
-        await ctx.reply("REGISTER_POST_CHANNEL_ID not found.")
+        await ctx.reply("REGISTER_POST_CHANNEL_ID not found.", delete_after=5)
         return
 
     emb = discord.Embed(title=POST_TITLE, description=POST_DESC, color=0x5865F2)
@@ -207,12 +213,47 @@ async def setup_register(ctx: commands.Context):
     await ch.send(embed=emb, view=view)
     await ctx.reply("Register post sent.", delete_after=5)
 
+@setup_register_prefix.error
+async def setup_register_prefix_error(ctx, error):
+    print("setup_register error:", repr(error))
+
+# ---------- SLASH command ----------
+@bot.tree.command(name="setup_register", description="Post the REGISTER button (admin only)")
+@app_commands.checks.has_permissions(administrator=True)
+async def setup_register_slash(interaction: discord.Interaction):
+    print("/setup_register used by", interaction.user)  # debug log
+    if interaction.guild_id != GUILD_ID:
+        await interaction.response.send_message("Wrong guild.", ephemeral=True)
+        return
+    guild = interaction.guild
+    ch = guild.get_channel(REGISTER_POST_CHANNEL_ID) if guild else None
+    if not ch:
+        await interaction.response.send_message("REGISTER_POST_CHANNEL_ID not found.", ephemeral=True)
+        return
+    emb = discord.Embed(title=POST_TITLE, description=POST_DESC, color=0x5865F2)
+    view = RegisterView()
+    await ch.send(embed=emb, view=view)
+    await interaction.response.send_message("Register post sent.", ephemeral=True)
+
+@setup_register_slash.error
+async def setup_register_slash_error(interaction, error):
+    print("slash error:", repr(error))
+
+# ---------- on_ready ----------
 @bot.event
 async def on_ready():
     global submitted_users
     submitted_users = load_submitted_user_ids()
     print(f"✅ Logged in as {bot.user} | Loaded {len(submitted_users)} submissions from CSV")
-    # keep the button alive after restarts
+
+    # Keep the button alive after restarts
     bot.add_view(RegisterView())
+
+    # Sync slash cmd to the specific guild (fast propagation)
+    try:
+        synced = await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
+        print(f"Slash commands synced: {len(synced)}")
+    except Exception as e:
+        print("Slash sync error:", e)
 
 bot.run(TOKEN)
