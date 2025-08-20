@@ -4,18 +4,23 @@ from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
 
-# === load secrets from .env / Railway ===
+# ===== Load env (Railway Variables) =====
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 REGISTER_POST_CHANNEL_ID = int(os.getenv("REGISTER_POST_CHANNEL_ID", "0"))
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
 
-# === rules ===
+# Small startup print to verify env read
+print("CFG => GUILD_ID=", GUILD_ID,
+      " REGISTER_POST_CHANNEL_ID=", REGISTER_POST_CHANNEL_ID,
+      " LOG_CHANNEL_ID=", LOG_CHANNEL_ID)
+
+# ===== Rules =====
 EXACT_DIGITS = 9
 EMAIL_RE = re.compile(r"^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$", re.I)
 
-# === texts (English only for users) ===
+# ===== Texts (EN only to users) =====
 BRAND = "Raid Rush"
 COLOR_OK = 0x57F287
 
@@ -49,7 +54,7 @@ EPHEM_OPEN_DM = (
 )
 EPHEM_ALREADY = "You have already submitted your information. Updates are disabled."
 
-# === persistence (CSV) ===
+# ===== Persistence (CSV) =====
 SAVE_PATH = Path("submissions.csv")
 
 def load_submitted_user_ids() -> set[int]:
@@ -61,199 +66,4 @@ def load_submitted_user_ids() -> set[int]:
                 for row in reader:
                     uid_str = row.get("discord_user_id")
                     if uid_str and uid_str.isdigit():
-                        ids.add(int(uid_str))
-        except Exception:
-            pass
-    return ids
-
-def append_submission(discord_user_id: int, email: str, player_id: str):
-    new_file = not SAVE_PATH.exists()
-    with SAVE_PATH.open("a", newline="") as f:
-        w = csv.writer(f)
-        if new_file:
-            w.writerow(["discord_user_id", "email", "player_id"])
-        w.writerow([discord_user_id, email, player_id])
-
-# === bot & intents ===
-intents = discord.Intents.default()
-intents.members = True
-intents.message_content = True  # IMPORTANT: enable to read prefix commands
-
-bot = commands.Bot(command_prefix="!", intents=intents)
-submitted_users: set[int] = set()  # loaded on_ready
-
-# ---------- UI View with Button ----------
-class RegisterView(discord.ui.View):
-    def __init__(self, timeout=None):
-        super().__init__(timeout=timeout)
-
-    @discord.ui.button(label=BTN_LABEL, style=discord.ButtonStyle.primary, custom_id="rr_register_btn")
-    async def register_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        user = interaction.user
-
-        # one-time only
-        if user.id in submitted_users:
-            await interaction.response.send_message(EPHEM_ALREADY, ephemeral=True)
-            return
-
-        # open DM
-        try:
-            dm = await user.create_dm()
-            await dm.send(DM_GREETING)
-        except Exception:
-            await interaction.response.send_message(EPHEM_OPEN_DM, ephemeral=True)
-            return
-
-        # acknowledge
-        await interaction.response.send_message("I've sent you a DM. Please check your inbox.", ephemeral=True)
-
-        # wait for DM reply
-        def check(m: discord.Message):
-            return m.author.id == user.id and isinstance(m.channel, discord.DMChannel)
-
-        attempts = 3
-        while attempts > 0:
-            try:
-                msg: discord.Message = await bot.wait_for("message", check=check, timeout=120)
-            except asyncio.TimeoutError:
-                try:
-                    await dm.send(DM_TIMEOUT)
-                except Exception:
-                    pass
-                return
-
-            content = msg.content.strip().replace("\n", " ")
-            parts = content.split()
-            if len(parts) != 2:
-                try:
-                    await dm.send(DM_HINT)
-                except:
-                    pass
-                attempts -= 1
-                continue
-
-            email, player_id = parts[0].strip(), parts[1].strip()
-
-            if not EMAIL_RE.fullmatch(email):
-                try:
-                    await dm.send(DM_INVALID_EMAIL)
-                except:
-                    pass
-                attempts -= 1
-                continue
-
-            if not player_id.isdigit():
-                try:
-                    await dm.send(DM_INVALID_DIGITS)
-                except:
-                    pass
-                attempts -= 1
-                continue
-
-            if len(player_id) != EXACT_DIGITS:
-                try:
-                    await dm.send(DM_INVALID_LENGTH)
-                except:
-                    pass
-                attempts -= 1
-                continue
-
-            # valid
-            submitted_users.add(user.id)
-            try:
-                append_submission(user.id, email, player_id)
-            except Exception:
-                pass
-
-            # log to private channel
-            guild = bot.get_guild(GUILD_ID) if GUILD_ID else None
-            if guild:
-                log_ch = guild.get_channel(LOG_CHANNEL_ID)
-                if log_ch:
-                    try:
-                        emb = discord.Embed(title="New Submission", color=0x3498DB)
-                        emb.add_field(name="Discord", value=f"{user} (`{user.id}`)", inline=False)
-                        emb.add_field(name="Email", value=email, inline=True)
-                        emb.add_field(name="Player ID", value=player_id, inline=True)
-                        await log_ch.send(embed=emb)
-                    except:
-                        await log_ch.send(f"<@{user.id}> email `{email}` | player id `{player_id}`")
-
-            try:
-                emb_ok = discord.Embed(description=DM_SUCCESS, color=COLOR_OK)
-                emb_ok.set_author(name=f"{BRAND} Verify")
-                emb_ok.add_field(name="Email", value=email, inline=True)
-                emb_ok.add_field(name="Player ID", value=f"`{player_id}`", inline=True)
-                await dm.send(embed=emb_ok)
-            except:
-                pass
-            return
-
-        # attempts exhausted
-        try:
-            await dm.send("Too many invalid attempts. Please click REGISTER again to restart.")
-        except:
-            pass
-
-# ---------- PREFIX command ----------
-@bot.command(name="setup_register")
-@commands.has_permissions(administrator=True)
-async def setup_register_prefix(ctx: commands.Context):
-    print("!setup_register called by", ctx.author, "in", ctx.channel)  # debug log
-    if ctx.guild is None or ctx.guild.id != GUILD_ID:
-        await ctx.reply("Wrong guild.", delete_after=5)
-        return
-    ch = ctx.guild.get_channel(REGISTER_POST_CHANNEL_ID)
-    if not ch:
-        await ctx.reply("REGISTER_POST_CHANNEL_ID not found.", delete_after=5)
-        return
-
-    emb = discord.Embed(title=POST_TITLE, description=POST_DESC, color=0x5865F2)
-    view = RegisterView()
-    await ch.send(embed=emb, view=view)
-    await ctx.reply("Register post sent.", delete_after=5)
-
-@setup_register_prefix.error
-async def setup_register_prefix_error(ctx, error):
-    print("setup_register error:", repr(error))
-
-# ---------- SLASH command ----------
-@bot.tree.command(name="setup_register", description="Post the REGISTER button (admin only)")
-@app_commands.checks.has_permissions(administrator=True)
-async def setup_register_slash(interaction: discord.Interaction):
-    print("/setup_register used by", interaction.user)  # debug log
-    if interaction.guild_id != GUILD_ID:
-        await interaction.response.send_message("Wrong guild.", ephemeral=True)
-        return
-    guild = interaction.guild
-    ch = guild.get_channel(REGISTER_POST_CHANNEL_ID) if guild else None
-    if not ch:
-        await interaction.response.send_message("REGISTER_POST_CHANNEL_ID not found.", ephemeral=True)
-        return
-    emb = discord.Embed(title=POST_TITLE, description=POST_DESC, color=0x5865F2)
-    view = RegisterView()
-    await ch.send(embed=emb, view=view)
-    await interaction.response.send_message("Register post sent.", ephemeral=True)
-
-@setup_register_slash.error
-async def setup_register_slash_error(interaction, error):
-    print("slash error:", repr(error))
-
-# ---------- on_ready ----------
-@bot.event
-async def on_ready():
-    global submitted_users
-    submitted_users = load_submitted_user_ids()
-    print(f"✅ Logged in as {bot.user} | Loaded {len(submitted_users)} submissions from CSV")
-
-    # Keep the button alive after restarts
-    bot.add_view(RegisterView())
-
-    # Sync slash cmd to the specific guild (fast propagation)
-    try:
-        synced = await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
-        print(f"Slash commands synced: {len(synced)}")
-    except Exception as e:
-        print("Slash sync error:", e)
-
-bot.run(TOKEN)
+                        id
