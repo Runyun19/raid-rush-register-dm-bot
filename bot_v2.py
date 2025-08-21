@@ -1,6 +1,9 @@
 import os, re, csv, io, base64, json, asyncio, datetime
 from pathlib import Path
 
+import gspread
+from google.oauth2 import service_account
+
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -137,46 +140,54 @@ def gs_client():
         print("[GS] gs_client fatal error:", repr(e))
         return None, None
 
-def gs_upsert(discord_user_id: int, row_dict: dict):
-    """
-    Row'u (discord_user_id ile) bul ve güncelle; yoksa ekle.
-    """
-    gc, ws = gs_client()
-    if not ws:
-        print("[GS] ws not ready, skip upsert.")
-        return False
+import datetime  # dosyanın tepesinde YOKSA ekleyin
 
+def gs_upsert(discord_id: int, payload: dict) -> bool:
+    """
+    A sütununda discord_user_id varsa UPDATE, yoksa APPEND.
+    gspread sürüm farklarına dayanıklı.
+    """
     try:
-        # Var olan satırı bul
-        cell = ws.find(str(discord_user_id))
-        row_idx = cell.row
-        # Var ise güncelle
-        now = datetime.datetime.utcnow().isoformat()
-        row_dict = {**row_dict, "updated_at": now}
-        # Kolon başlıklarını al
-        headers = ws.row_values(1)
-        update_values = []
-        for h in headers:
-            update_values.append(str(row_dict.get(h, "")))
-        ws.update(range_name=f"{GS_SHEET_NAME}!A{row_idx}:{gspread.utils.rowcol_to_a1(row_idx, len(headers))}",
-                  values=[update_values])
-        print(f"[GS] updated row for {discord_user_id}")
-        return True
-    except gspread.exceptions.CellNotFound:
-        # Ekleyelim
-        try:
-            now = datetime.datetime.utcnow().isoformat()
-            row_dict = {**row_dict, "updated_at": now}
-            headers = ws.row_values(1)
-            values = []
-            for h in headers:
-                values.append(str(row_dict.get(h, "")))
-            ws.append_row(values)
-            print(f"[GS] appended row for {discord_user_id}")
-            return True
-        except Exception as e:
-            print("[GS] append error:", repr(e))
+        _, ws = gs_client()
+        if not ws:
+            print("[GS] upsert: worksheet not ready")
             return False
+
+        # Bul (bazı sürümlerde in_column yok; varsa kullanıyoruz)
+        cell = None
+        try:
+            try:
+                cell = ws.find(str(discord_id), in_column=1)
+            except TypeError:
+                cell = ws.find(str(discord_id))
+        except Exception:
+            cell = None
+
+        now = datetime.datetime.utcnow().isoformat()
+
+        # Sheet kolon sırası:
+        # discord_user_id | discord_name | email | player_id | status | log_message_id | updated_by | updated_at
+        row_values = [
+            str(discord_id),
+            payload.get("discord_name", ""),
+            payload.get("email", ""),
+            payload.get("player_id", ""),
+            payload.get("status", "ok"),
+            payload.get("log_message_id", ""),
+            payload.get("updated_by", "bot"),
+            now,
+        ]
+
+        if cell and getattr(cell, "row", None):
+            row_idx = cell.row
+            ws.update(f"A{row_idx}:H{row_idx}", [row_values])
+            print(f"[GS] updated row {row_idx} for {discord_id}")
+        else:
+            ws.append_row(row_values, value_input_option="USER_ENTERED")
+            print(f"[GS] appended new row for {discord_id}")
+
+        return True
+
     except Exception as e:
         print("[GS] upsert error:", repr(e))
         return False
