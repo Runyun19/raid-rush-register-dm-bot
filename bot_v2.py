@@ -1,28 +1,34 @@
-import os, re, csv, asyncio, discord
+# bot_v2.py
+import os
+import re
+import csv
+import asyncio
 from pathlib import Path
+
+import discord
 from discord.ext import commands
 from discord import app_commands
-from dotenv import load_dotenv
 
-# ===== Load env (Railway Variables) =====
-load_dotenv()
-TOKEN = os.getenv("DISCORD_TOKEN")
+# ── ENV ──────────────────────────────────────────────────────────────────────
+# Railway Variables (veya .env yerel kullanım)
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 REGISTER_POST_CHANNEL_ID = int(os.getenv("REGISTER_POST_CHANNEL_ID", "0"))
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
 REGISTERED_ROLE_ID = int(os.getenv("REGISTERED_ROLE_ID", "0"))
 
+print(
+    "CFG =>",
+    f"GUILD_ID={GUILD_ID}",
+    f"REGISTER_POST_CHANNEL_ID={REGISTER_POST_CHANNEL_ID}",
+    f"LOG_CHANNEL_ID={LOG_CHANNEL_ID}",
+    f"REGISTERED_ROLE_ID={REGISTERED_ROLE_ID}",
+)
 
-# Small startup print to verify env read
-print("CFG => GUILD_ID=", GUILD_ID,
-      " REGISTER_POST_CHANNEL_ID=", REGISTER_POST_CHANNEL_ID,
-      " LOG_CHANNEL_ID=", LOG_CHANNEL_ID)
-
-# ===== Rules =====
+# ── KURALLAR / METINLER ──────────────────────────────────────────────────────
 EXACT_DIGITS = 9
 EMAIL_RE = re.compile(r"^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$", re.I)
 
-# ===== Texts (EN only to users) =====
 BRAND = "Raid Rush"
 COLOR_OK = 0x57F287
 
@@ -56,12 +62,12 @@ DM_TIMEOUT = "Timed out waiting for your reply. You can press the REGISTER butto
 DM_SUCCESS = "✅ Your information has been saved. Your code will be sent by email."
 
 EPHEM_OPEN_DM = (
-    "I couldn’t DM you. Please enable **Direct Messages** from server members (User Settings → Privacy) "
-    "and click **REGISTER** again."
+    "I couldn’t DM you. Please enable **Direct Messages** from server members "
+    "(User Settings → Privacy) and click **REGISTER** again."
 )
 EPHEM_ALREADY = "You have already submitted your information. Updates are disabled."
 
-# ===== Persistence (CSV) =====
+# ── KALICILIK (CSV) ──────────────────────────────────────────────────────────
 SAVE_PATH = Path("submissions.csv")
 
 def load_submitted_user_ids() -> set[int]:
@@ -86,17 +92,37 @@ def append_submission(discord_user_id: int, email: str, player_id: str):
             w.writerow(["discord_user_id", "email", "player_id"])
         w.writerow([discord_user_id, email, player_id])
 
-# ===== Bot & Intents =====
+def remove_submission_row(discord_user_id: int) -> bool:
+    if not SAVE_PATH.exists():
+        return False
+    changed = False
+    rows = []
+    with SAVE_PATH.open("r", newline="") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            uid = r.get("discord_user_id", "")
+            if uid and uid.isdigit() and int(uid) == discord_user_id:
+                changed = True
+                continue
+            rows.append(r)
+    if changed:
+        with SAVE_PATH.open("w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["discord_user_id", "email", "player_id"])
+            w.writeheader()
+            for r in rows:
+                w.writerow(r)
+    return changed
+
+# ── BOT / INTENTS ────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True  # prefix komutları için gerekli
 bot = commands.Bot(command_prefix="!", intents=intents)
 submitted_users: set[int] = set()
 
-# Tek bir guild’e hızlı kayıt için Object
-GOBJ = discord.Object(id=GUILD_ID)
+GOBJ = discord.Object(id=GUILD_ID)  # tek sunucuya hızlı slash sync
 
-# ===== View (REGISTER button) =====
+# ── REGISTER BUTON VIEW ─────────────────────────────────────────────────────
 class RegisterView(discord.ui.View):
     def __init__(self, timeout=None):
         super().__init__(timeout=timeout)
@@ -106,12 +132,12 @@ class RegisterView(discord.ui.View):
         user = interaction.user
         print("Button click from:", user, user.id)
 
-        # 1) Tekrar kayıt kontrolü
+        # 1) tekrar kayıt blok
         if user.id in submitted_users:
             await interaction.response.send_message(EPHEM_ALREADY, ephemeral=True)
             return
 
-        # 2) DM açmayı dene
+        # 2) DM aç
         try:
             dm = await user.create_dm()
             await dm.send(DM_GREETING)
@@ -120,10 +146,10 @@ class RegisterView(discord.ui.View):
             await interaction.response.send_message(EPHEM_OPEN_DM, ephemeral=True)
             return
 
-        # 3) Butona bastığına dair ephemeral yanıt
+        # 3) ephemeral onay
         await interaction.response.send_message("I've sent you a DM. Please check your inbox.", ephemeral=True)
 
-        # 4) Kullanıcıdan DM’de tek mesajda email + playerID bekle
+        # 4) DM mesaj bekleme
         def check(m: discord.Message):
             return m.author.id == user.id and isinstance(m.channel, discord.DMChannel)
 
@@ -174,7 +200,7 @@ class RegisterView(discord.ui.View):
                 attempts -= 1
                 continue
 
-            # 5) VALID → kaydet, logla, rol ver, DM onay gönder
+            # 5) VALID → kaydet, logla, rol ver, DM onay
             submitted_users.add(user.id)
             try:
                 append_submission(user.id, email, player_id)
@@ -183,7 +209,7 @@ class RegisterView(discord.ui.View):
 
             guild = bot.get_guild(GUILD_ID)
 
-            # 5a) Log kanalına düş
+            # 5a) log kanala
             if guild:
                 log_ch = guild.get_channel(LOG_CHANNEL_ID)
                 if log_ch:
@@ -200,31 +226,39 @@ class RegisterView(discord.ui.View):
                         except Exception as e2:
                             print("Log plaintext error:", e2)
 
-            # 5b) Kayıtlı rolünü ver (REGISTERED_ROLE_ID)
-           try:
-    if guild and REGISTERED_ROLE_ID:
-        role = guild.get_role(REGISTERED_ROLE_ID)
-        if role:
-            member = guild.get_member(user.id)
-            if member is None:
-                try:
-                    member = await guild.fetch_member(user.id)
-                except Exception as fe:
-                    print("fetch_member error:", fe)
-                    member = None
+            # 5b) rol ver
+            try:
+                if guild and REGISTERED_ROLE_ID:
+                    role = guild.get_role(REGISTERED_ROLE_ID)
+                    me = guild.me
+                    print(
+                        f"[ROLE] target_role={role} id={REGISTERED_ROLE_ID} "
+                        f"role_pos={getattr(role,'position',None)} managed={getattr(role,'managed',None)} | "
+                        f"bot_top={me.top_role} pos={me.top_role.position} "
+                        f"manage_roles={me.guild_permissions.manage_roles}"
+                    )
 
-            if member:
-                try:
-                    await member.add_roles(role, reason="Successfully registered")
-                    print(f"Role assigned: {role.name} -> {member}")
-                except Exception as e_add:
-                    print("Role add error:", e_add)
-            else:
-                print("Member not found in guild for role assignment.")
-        else:
-            print("Role not found by REGISTERED_ROLE_ID.")
-except Exception as e:
-    print("Role assign block error:", e)
+                    if role:
+                        member = guild.get_member(user.id)
+                        if member is None:
+                            try:
+                                member = await guild.fetch_member(user.id)
+                            except Exception as fe:
+                                print("[ROLE] fetch_member error:", fe)
+                                member = None
+
+                        if member:
+                            try:
+                                await member.add_roles(role, reason="Successfully registered")
+                                print(f"[ROLE] Assigned: {role.name} -> {member}")
+                            except Exception as e_add:
+                                print("[ROLE] add_roles error:", repr(e_add))
+                        else:
+                            print("[ROLE] Member not found in guild for role assignment.")
+                    else:
+                        print("[ROLE] Role not found by REGISTERED_ROLE_ID.")
+            except Exception as e:
+                print("[ROLE] assign block error:", repr(e))
 
             # 5c) DM onay
             try:
@@ -236,15 +270,15 @@ except Exception as e:
             except Exception as e:
                 print("DM ok embed error:", e)
 
-            return  # başarıyla bitti
+            return  # başarıyla tamamlandı
 
-        # 6) Çok fazla hatalı deneme
+        # 6) çok fazla deneme
         try:
             await dm.send("Too many invalid attempts. Please click REGISTER again to restart.")
         except Exception:
             pass
 
-# ===== Prefix commands =====
+# ── PREFIX KOMUTLAR ─────────────────────────────────────────────────────────
 @bot.command(name="ping")
 async def ping_prefix(ctx: commands.Context):
     print("!ping from", ctx.author, "in", ctx.channel)
@@ -255,34 +289,44 @@ async def ping_prefix(ctx: commands.Context):
 async def setup_register_prefix(ctx: commands.Context):
     print("!setup_register from", ctx.author, "in", ctx.channel)
     if ctx.guild is None or ctx.guild.id != GUILD_ID:
-        await ctx.reply("Wrong guild.", delete_after=5); return
+        await ctx.reply("Wrong guild.", delete_after=5)
+        return
     ch = ctx.guild.get_channel(REGISTER_POST_CHANNEL_ID)
     if not ch:
-        await ctx.reply("REGISTER_POST_CHANNEL_ID not found.", delete_after=5); return
+        await ctx.reply("REGISTER_POST_CHANNEL_ID not found.", delete_after=5)
+        return
     emb = discord.Embed(title=POST_TITLE, description=POST_DESC, color=0x5865F2)
     await ch.send(embed=emb, view=RegisterView())
     await ctx.reply("Register post sent.", delete_after=5)
-      # == helpers: remove from CSV ==
-def remove_submission_row(discord_user_id: int) -> bool:
-    if not SAVE_PATH.exists():
-        return False
-    changed = False
-    rows = []
-    with SAVE_PATH.open("r", newline="") as f:
-        reader = csv.DictReader(f)
-        for r in reader:
-            uid = r.get("discord_user_id", "")
-            if uid and uid.isdigit() and int(uid) == discord_user_id:
-                changed = True
-                continue
-            rows.append(r)
-    if changed:
-        with SAVE_PATH.open("w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=["discord_user_id", "email", "player_id"])
-            w.writeheader()
-            for r in rows:
-                w.writerow(r)
-    return changed
+
+@bot.command(name="role_diag")
+@commands.has_permissions(administrator=True)
+async def role_diag(ctx: commands.Context, member: discord.Member = None):
+    """Botun rol yetkilerini ve Registered rolünü kontrol eder."""
+    guild = ctx.guild
+    me = guild.me
+    role = guild.get_role(REGISTERED_ROLE_ID)
+    txt = [
+        f"me.top_role = {me.top_role} (pos={me.top_role.position})",
+        f"me.manage_roles = {me.guild_permissions.manage_roles}",
+        f"target role = {role} (id={REGISTERED_ROLE_ID}, pos={getattr(role,'position',None)}, managed={getattr(role,'managed',None)})",
+    ]
+    await ctx.reply("\n".join(txt), delete_after=20)
+
+@bot.command(name="grant_registered")
+@commands.has_permissions(administrator=True)
+async def grant_registered(ctx: commands.Context, target: discord.Member):
+    """Manuel rol testi: !grant_registered @kullanici"""
+    guild = ctx.guild
+    role = guild.get_role(REGISTERED_ROLE_ID)
+    if not role:
+        await ctx.reply("Role not found. Check REGISTERED_ROLE_ID.", delete_after=10)
+        return
+    try:
+        await target.add_roles(role, reason="Manual grant test")
+        await ctx.reply(f"Gave `{role.name}` to {target.mention}", delete_after=10)
+    except Exception as e:
+        await ctx.reply(f"add_roles error: `{e}`", delete_after=15)
 
 @bot.command(name="reset_user")
 @commands.has_permissions(administrator=True)
@@ -294,7 +338,7 @@ async def reset_user(ctx: commands.Context, user_id_or_mention: str):
     else:
         try:
             uid = int(user_id_or_mention.replace("<@", "").replace(">", "").replace("!", ""))
-        except:
+        except Exception:
             uid = None
     if uid is None:
         await ctx.reply("Provide a valid user ID or mention.", delete_after=8)
@@ -309,7 +353,7 @@ async def reset_user(ctx: commands.Context, user_id_or_mention: str):
 async def sub_count(ctx: commands.Context):
     await ctx.reply(f"Currently stored submissions in memory: **{len(submitted_users)}**", delete_after=8)
 
-# ===== Slash commands (guild-bound) =====
+# ── SLASH KOMUTLAR ──────────────────────────────────────────────────────────
 @bot.tree.command(name="ping", description="Health check", guild=GOBJ)
 async def ping_slash(interaction: discord.Interaction):
     print("/ping by", interaction.user)
@@ -320,30 +364,36 @@ async def ping_slash(interaction: discord.Interaction):
 async def setup_register_slash(interaction: discord.Interaction):
     print("/setup_register by", interaction.user)
     if interaction.guild_id != GUILD_ID:
-        await interaction.response.send_message("Wrong guild.", ephemeral=True); return
+        await interaction.response.send_message("Wrong guild.", ephemeral=True)
+        return
     guild = interaction.guild
     ch = guild.get_channel(REGISTER_POST_CHANNEL_ID) if guild else None
     if not ch:
-        await interaction.response.send_message("REGISTER_POST_CHANNEL_ID not found.", ephemeral=True); return
+        await interaction.response.send_message("REGISTER_POST_CHANNEL_ID not found.", ephemeral=True)
+        return
     emb = discord.Embed(title=POST_TITLE, description=POST_DESC, color=0x5865F2)
     await ch.send(embed=emb, view=RegisterView())
     await interaction.response.send_message("Register post sent.", ephemeral=True)
 
-# ===== on_ready =====
+# ── READY ───────────────────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
     global submitted_users
     submitted_users = load_submitted_user_ids()
     print(f"✅ Logged in as {bot.user} | Loaded {len(submitted_users)} submissions from CSV")
 
-    # keep button alive across restarts
+    # persistent view
     bot.add_view(RegisterView())
 
-    # fast sync to guild
+    # slash sync (guild bound)
     try:
         synced = await bot.tree.sync(guild=GOBJ)
         print(f"Slash synced for guild {GUILD_ID}: {len(synced)} cmd(s)")
     except Exception as e:
         print("Slash sync error:", e)
 
-bot.run(TOKEN)
+# ── RUN ──────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    if not DISCORD_TOKEN:
+        raise RuntimeError("DISCORD_TOKEN is not set")
+    bot.run(DISCORD_TOKEN)
