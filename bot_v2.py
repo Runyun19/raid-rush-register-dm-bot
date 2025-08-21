@@ -27,16 +27,15 @@ COLOR_OK = 0x57F287
 BTN_LABEL = "REGISTER"
 POST_TITLE = "Special Reward Registration"
 POST_DESC = (
-    Hello Defender!
-
-Please follow these steps to register for your reward:
-    "1️⃣ Click the "Register" button below.\n"
-    "2️⃣ The bot will send you a private message (DM).\n\n"
-    "3️⃣ In that DM, send your email address and Player ID together in one message, separated by a space.\n"
-    "✅ Example: `email@example.com 123456789`"
-📌 Make sure the information is correct; otherwise, your reward cannot be added.
-
-🔵 Click the button below to start your registration 👇
+    "Hello Defender!\n\n"
+    "Please follow these steps to register for your reward:\n\n"
+    "1️⃣ Click the **REGISTER** button below.\n"
+    "2️⃣ The bot will send you a private message (DM).\n"
+    "3️⃣ In that DM, send your **email address** and **Player ID** together in one message, separated by a space.\n\n"
+    "✅ Example:\n"
+    "`email@example.com 123456789`\n\n"
+    "📌 Make sure the information is correct; otherwise, your reward cannot be added.\n\n"
+    "🔵 Click the button below to start your registration:"
 )
 
 DM_GREETING = (
