@@ -68,59 +68,137 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 GOBJ = discord.Object(id=GUILD_ID)
 
 # ─────────────────────────────────────────────────────────────────────
-# Google Sheets helpers
-# ─────────────────────────────────────────────────────────────────────
+# ---------------- Google Sheets helpers ----------------
+import json, base64, datetime
+import gspread
+from google.oauth2 import service_account
+
+# ENV'leri oku (ikisi de desteklenir: JSON veya B64)
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+GOOGLE_SERVICE_ACCOUNT_B64  = os.getenv("GOOGLE_SERVICE_ACCOUNT_B64", "").strip()
+GS_SHEET_ID   = os.getenv("GOOGLE_SHEET_ID", "").strip()
+GS_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "").strip()
+
+def _debug_env_short(val: str, label: str) -> str:
+    """Gizlilik için sadece uzunluğu/başını loglayalım."""
+    if not val:
+        return f"{label}=<empty>"
+    return f"{label}=len:{len(val)} head:{val[:20]!r}"
+
 def gs_client():
-    if not GOOGLE_SERVICE_ACCOUNT_JSON or not GS_SHEET_ID:
+    """
+    1) GOOGLE_SERVICE_ACCOUNT_JSON varsa: doğrudan JSON string'ini kullanır
+    2) Yoksa GOOGLE_SERVICE_ACCOUNT_B64 varsa: decode edip JSON'a çevirir
+    """
+    print("[GS] init:",
+          _debug_env_short(GOOGLE_SERVICE_ACCOUNT_JSON, "JSON"),
+          "|",
+          _debug_env_short(GOOGLE_SERVICE_ACCOUNT_B64, "B64"),
+          "| SHEET_ID:", GS_SHEET_ID, "| SHEET_NAME:", GS_SHEET_NAME)
+
+    if not GS_SHEET_ID or not GS_SHEET_NAME:
+        print("[GS] Missing GS_SHEET_ID or GS_SHEET_NAME")
         return None, None
-    data = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)   # 🔹 Burada base64 decode yerine direkt JSON string kullanıyoruz
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    creds = service_account.Credentials.from_service_account_info(data, scopes=scopes)
-    gc = gspread.authorize(creds)
-    sh = gc.open_by_key(GS_SHEET_ID)
+
+    data = None
+    if GOOGLE_SERVICE_ACCOUNT_JSON:
+        try:
+            data = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+        except Exception as e:
+            print("[GS] JSON env parse error:", repr(e))
+
+    if data is None and GOOGLE_SERVICE_ACCOUNT_B64:
+        try:
+            decoded = base64.b64decode(GOOGLE_SERVICE_ACCOUNT_B64)
+            data = json.loads(decoded.decode("utf-8"))
+        except Exception as e:
+            print("[GS] B64 env decode/parse error:", repr(e))
+
+    if data is None:
+        print("[GS] No usable credentials data found.")
+        return None, None
+
     try:
-        ws = sh.worksheet(GS_SHEET_NAME)
-    except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(GS_SHEET_NAME, rows=1000, cols=12)
-        ws.append_row(["discord_user_id","discord_name","email","player_id","status","log_message_id","updated_by","updated_at"])
-    return gc, ws
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        creds = service_account.Credentials.from_service_account_info(data, scopes=scopes)
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_key(GS_SHEET_ID)
+        try:
+            ws = sh.worksheet(GS_SHEET_NAME)
+        except gspread.WorksheetNotFound:
+            ws = sh.add_worksheet(GS_SHEET_NAME, rows=1000, cols=12)
+            ws.append_row(["discord_user_id","discord_name","email","player_id",
+                           "status","log_message_id","updated_by","updated_at"])
+        return gc, ws
+    except Exception as e:
+        print("[GS] gs_client fatal error:", repr(e))
+        return None, None
 
-def gs_upsert(user_id: int, row: dict):
-    _, ws = gs_client()
-    if not ws: return False
-    # kullanıcı zaten var mı?
-    all_ids = ws.col_values(1)  # A sütunu: discord_user_id
-    row_idx = None
-    for i, v in enumerate(all_ids, start=1):
-        if i == 1:  # header
-            continue
-        if v.strip() == str(user_id):
-            row_idx = i
-            break
+def gs_upsert(discord_user_id: int, row_dict: dict):
+    """
+    Row'u (discord_user_id ile) bul ve güncelle; yoksa ekle.
+    """
+    gc, ws = gs_client()
+    if not ws:
+        print("[GS] ws not ready, skip upsert.")
+        return False
 
-    headers = ws.row_values(1)
-    values = [str(row.get(h, "")) for h in headers]
+    try:
+        # Var olan satırı bul
+        cell = ws.find(str(discord_user_id))
+        row_idx = cell.row
+        # Var ise güncelle
+        now = datetime.datetime.utcnow().isoformat()
+        row_dict = {**row_dict, "updated_at": now}
+        # Kolon başlıklarını al
+        headers = ws.row_values(1)
+        update_values = []
+        for h in headers:
+            update_values.append(str(row_dict.get(h, "")))
+        ws.update(range_name=f"{GS_SHEET_NAME}!A{row_idx}:{gspread.utils.rowcol_to_a1(row_idx, len(headers))}",
+                  values=[update_values])
+        print(f"[GS] updated row for {discord_user_id}")
+        return True
+    except gspread.exceptions.CellNotFound:
+        # Ekleyelim
+        try:
+            now = datetime.datetime.utcnow().isoformat()
+            row_dict = {**row_dict, "updated_at": now}
+            headers = ws.row_values(1)
+            values = []
+            for h in headers:
+                values.append(str(row_dict.get(h, "")))
+            ws.append_row(values)
+            print(f"[GS] appended row for {discord_user_id}")
+            return True
+        except Exception as e:
+            print("[GS] append error:", repr(e))
+            return False
+    except Exception as e:
+        print("[GS] upsert error:", repr(e))
+        return False
 
-    if row_idx:
-        ws.update(f"A{row_idx}:{chr(64+len(headers))}{row_idx}", [values])
-    else:
-        ws.append_row(values)
-    return True
-
-def gs_fetch_all_as_csv_bytes() -> bytes:
-    _, ws = gs_client()
-    if not ws: return b""
-    headers = ws.row_values(1)
-    rows = ws.get_all_values()[1:]
-    out = io.StringIO()
-    import csv as _csv
-    w = _csv.writer(out)
-    w.writerow(headers)
-    w.writerows(rows)
-    return out.getvalue().encode()
+# — Test komutu: moderator-only kanalda çalışır —
+@bot.command(name="gs_test")
+@commands.has_permissions(administrator=True)
+async def gs_test(ctx: commands.Context):
+    ch_ok = (MOD_COMMANDS_CHANNEL_ID == 0) or (ctx.channel.id == MOD_COMMANDS_CHANNEL_ID)
+    if not ch_ok:
+        await ctx.reply("Use this in the moderator-only channel.", delete_after=8)
+        return
+    ok = gs_upsert(ctx.author.id, {
+        "discord_user_id": str(ctx.author.id),
+        "discord_name": str(ctx.author),
+        "email": "test@example.com",
+        "player_id": "123456789",
+        "status": "test",
+        "log_message_id": "",
+        "updated_by": str(ctx.author)
+    })
+    await ctx.reply(f"gs_test => {'OK' if ok else 'FAILED'}", delete_after=8)
 
 # ─────────────────────────────────────────────────────────────────────
 # CSV yedek (opsiyonel)
