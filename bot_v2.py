@@ -402,31 +402,31 @@ class RegisterView(discord.ui.View):
 @bot.command(name="ping")
 async def ping_prefix(ctx: commands.Context):
     print("!ping from", ctx.author, "in", ctx.channel)
-    await ctx.reply("Pong!", delete_after=5)
+    await ctx.reply("Pong!")
 
 @bot.command(name="setup_register")
 @commands.has_permissions(administrator=True)
 async def setup_register_prefix(ctx: commands.Context):
     if not _mod_channel_ok_for_ctx(ctx):
-        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.", delete_after=8)
+        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.")
         return
     print("!setup_register from", ctx.author, "in", ctx.channel)
     if ctx.guild is None or ctx.guild.id != GUILD_ID:
-        await ctx.reply("Wrong guild.", delete_after=5)
+        await ctx.reply("Wrong guild.",)
         return
     ch = ctx.guild.get_channel(REGISTER_POST_CHANNEL_ID)
     if not ch:
-        await ctx.reply("REGISTER_POST_CHANNEL_ID not found.", delete_after=5)
+        await ctx.reply("REGISTER_POST_CHANNEL_ID not found.")
         return
     emb = discord.Embed(title=POST_TITLE, description=POST_DESC, color=0x5865F2)
     await ch.send(embed=emb, view=RegisterView())
-    await ctx.reply("Register post sent.", delete_after=5)
+    await ctx.reply("Register post sent.")
 
 @bot.command(name="role_diag")
 @commands.has_permissions(administrator=True)
 async def role_diag(ctx: commands.Context, member: discord.Member = None):
     if not _mod_channel_ok_for_ctx(ctx):
-        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.", delete_after=8)
+        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.")
         return
     guild = ctx.guild
     me = guild.me
@@ -436,30 +436,30 @@ async def role_diag(ctx: commands.Context, member: discord.Member = None):
         f"me.manage_roles = {me.guild_permissions.manage_roles}",
         f"target role = {role} (id={REGISTERED_ROLE_ID}, pos={getattr(role,'position',None)}, managed={getattr(role,'managed',None)})",
     ]
-    await ctx.reply("\n".join(txt), delete_after=20)
+    await ctx.reply("\n".join(txt))
 
 @bot.command(name="grant_registered")
 @commands.has_permissions(administrator=True)
 async def grant_registered(ctx: commands.Context, target: discord.Member):
     if not _mod_channel_ok_for_ctx(ctx):
-        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.", delete_after=8)
+        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.")
         return
     guild = ctx.guild
     role = guild.get_role(REGISTERED_ROLE_ID)
     if not role:
-        await ctx.reply("Role not found. Check REGISTERED_ROLE_ID.", delete_after=10)
+        await ctx.reply("Role not found. Check REGISTERED_ROLE_ID.")
         return
     try:
         await target.add_roles(role, reason="Manual grant test")
-        await ctx.reply(f"Gave `{role.name}` to {target.mention}", delete_after=10)
+        await ctx.reply(f"Gave `{role.name}` to {target.mention}")
     except Exception as e:
-        await ctx.reply(f"add_roles error: `{e}`", delete_after=15)
+        await ctx.reply(f"add_roles error: `{e}`")
 
 @bot.command(name="reset_user")
 @commands.has_permissions(administrator=True)
 async def reset_user(ctx: commands.Context, user_id_or_mention: str):
     if not _mod_channel_ok_for_ctx(ctx):
-        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.", delete_after=8)
+        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.")
         return
     uid = None
     if user_id_or_mention.isdigit():
@@ -470,20 +470,20 @@ async def reset_user(ctx: commands.Context, user_id_or_mention: str):
         except Exception:
             uid = None
     if uid is None:
-        await ctx.reply("Provide a valid user ID or mention.", delete_after=8)
+        await ctx.reply("Provide a valid user ID or mention.")
         return
     removed_csv = remove_submission_row(uid)
     submitted_users.discard(uid)
-    await ctx.reply(f"Reset done for `<@{uid}>` (csv_removed={removed_csv}).", delete_after=8)
+    await ctx.reply(f"Reset done for `<@{uid}>` (csv_removed={removed_csv}).")
 
 @bot.command(name="update_email")
 @commands.has_permissions(administrator=True)
 async def update_email(ctx: commands.Context, user_mention_or_id: str, new_email: str):
     if not _mod_channel_ok_for_ctx(ctx):
-        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.", delete_after=8)
+        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.")
         return
     if not EMAIL_RE.fullmatch(new_email):
-        await ctx.reply("Invalid email format.", delete_after=8)
+        await ctx.reply("Invalid email format.")
         return
     try:
         if user_mention_or_id.isdigit():
@@ -491,48 +491,46 @@ async def update_email(ctx: commands.Context, user_mention_or_id: str, new_email
         else:
             uid = int(user_mention_or_id.replace("<@", "").replace(">", "").replace("!", ""))
     except Exception:
-        await ctx.reply("Provide a valid user mention or ID.", delete_after=8)
+        await ctx.reply("Provide a valid user mention or ID.")
         return
     ok = update_submission(uid, new_email=new_email, new_player_id=None)
     if ok:
-        await ctx.reply(f"Updated email for `<@{uid}>` → `{new_email}`", delete_after=10)
+        await ctx.reply(f"Updated email for `<@{uid}>` → `{new_email}`")
         await _edit_log_from_csv(ctx.guild, uid)
     else:
-        await ctx.reply("Record not found in CSV.", delete_after=10)
+        await ctx.reply("Record not found in CSV.")
 
 @bot.command(name="update_record")
 @commands.has_permissions(administrator=True)
 async def update_record(ctx: commands.Context, user_mention_or_id: str, new_email: str, new_player_id: str):
     if not _mod_channel_ok_for_ctx(ctx):
-        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.", delete_after=8)
+        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.")
         return
     if not EMAIL_RE.fullmatch(new_email):
-        await ctx.reply("Invalid email format.", delete_after=8); return
+        await ctx.reply("Invalid email format."); return
     if not new_player_id.isdigit() or len(new_player_id) != EXACT_DIGITS:
-        await ctx.reply(f"Player ID must be exactly {EXACT_DIGITS} digits.", delete_after=8); return
+        await ctx.reply(f"Player ID must be exactly {EXACT_DIGITS} digits."); return
     try:
         if user_mention_or_id.isdigit():
             uid = int(user_mention_or_id)
         else:
             uid = int(user_mention_or_id.replace("<@", "").replace(">", "").replace("!", ""))
     except Exception:
-        await ctx.reply("Provide a valid user mention or ID.", delete_after=8)
+        await ctx.reply("Provide a valid user mention or ID.")
         return
     ok = update_submission(uid, new_email=new_email, new_player_id=new_player_id)
     if ok:
         await ctx.reply(
-            f"Updated record for `<@{uid}>` → `{new_email}` / `{new_player_id}`",
-            delete_after=10,
-        )
+            f"Updated record for `<@{uid}>` → `{new_email}` / `{new_player_id}`")
         await _edit_log_from_csv(ctx.guild, uid)
     else:
-        await ctx.reply("Record not found in CSV.", delete_after=10)
+        await ctx.reply("Record not found in CSV.")
 
 @bot.command(name="edit_log")
 @commands.has_permissions(administrator=True)
 async def edit_log(ctx: commands.Context, user_mention_or_id: str):
     if not _mod_channel_ok_for_ctx(ctx):
-        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.", delete_after=8)
+        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.")
         return
     try:
         if user_mention_or_id.isdigit():
@@ -540,10 +538,10 @@ async def edit_log(ctx: commands.Context, user_mention_or_id: str):
         else:
             uid = int(user_mention_or_id.replace("<@", "").replace(">", "").replace("!", ""))
     except Exception:
-        await ctx.reply("Provide a valid user mention or ID.", delete_after=8)
+        await ctx.reply("Provide a valid user mention or ID.")
         return
     await _edit_log_from_csv(ctx.guild, uid)
-    await ctx.reply("Log message updated (if found).", delete_after=8)
+    await ctx.reply("Log message updated (if found).")
 
 async def _edit_log_from_csv(guild: discord.Guild, uid: int):
     if guild is None:
@@ -587,9 +585,9 @@ async def _edit_log_from_csv(guild: discord.Guild, uid: int):
 @commands.has_permissions(administrator=True)
 async def sub_count(ctx: commands.Context):
     if not _mod_channel_ok_for_ctx(ctx):
-        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.", delete_after=8)
+        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.")
         return
-    await ctx.reply(f"Currently stored submissions in memory: **{len(submitted_users)}**", delete_after=8)
+    await ctx.reply(f"Currently stored submissions in memory: **{len(submitted_users)}**")
 
 # ── SLASH KOMUTLAR (yalnızca MOD_COMMANDS_CHANNEL_ID) ───────────────────────
 @bot.tree.command(name="ping", description="Health check", guild=GOBJ)
