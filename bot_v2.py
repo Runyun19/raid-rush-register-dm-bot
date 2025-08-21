@@ -17,11 +17,13 @@ GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 REGISTER_POST_CHANNEL_ID = int(os.getenv("REGISTER_POST_CHANNEL_ID", "0"))
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
 REGISTERED_ROLE_ID = int(os.getenv("REGISTERED_ROLE_ID", "0"))
+# Admin komutlarını kilitlemek istediğin kanal (moderator-only)
+MOD_COMMANDS_CHANNEL_ID = int(os.getenv("MOD_COMMANDS_CHANNEL_ID", "0"))
 
 # İletişim yönlendirmesi (default: @runyun & @aurilis)
 CONTACT_MENTION = os.getenv(
     "CONTACT_MENTION",
-    "<@1358693833428308150> & <@940252755237412945>"
+    "<@940252755237412945> & <@1358693833428308150>"
 )
 
 print(
@@ -30,6 +32,7 @@ print(
     f"REGISTER_POST_CHANNEL_ID={REGISTER_POST_CHANNEL_ID}",
     f"LOG_CHANNEL_ID={LOG_CHANNEL_ID}",
     f"REGISTERED_ROLE_ID={REGISTERED_ROLE_ID}",
+    f"MOD_COMMANDS_CHANNEL_ID={MOD_COMMANDS_CHANNEL_ID}",
     f"CONTACT_MENTION={CONTACT_MENTION}",
 )
 
@@ -113,7 +116,6 @@ def append_submission(discord_user_id: int, email: str, player_id: str):
         w.writerow([discord_user_id, email, player_id])
 
 def update_submission(discord_user_id: int, new_email: Optional[str] = None, new_player_id: Optional[str] = None) -> bool:
-    """CSV'de ilgili kullanıcı satırını günceller. True/False döner."""
     if not SAVE_PATH.exists():
         return False
     changed = False
@@ -166,6 +168,21 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 submitted_users: set[int] = set()
 
 GOBJ = discord.Object(id=GUILD_ID)
+
+# ── Yardımcı: admin komut kanalı kontrolü ────────────────────────────────────
+def _mod_channel_ok_for_ctx(ctx: commands.Context) -> bool:
+    if MOD_COMMANDS_CHANNEL_ID == 0:
+        return True
+    ch = getattr(ctx, "channel", None)
+    return bool(ch and ch.id == MOD_COMMANDS_CHANNEL_ID)
+
+def _mod_channel_ok_for_inter(interaction: discord.Interaction) -> bool:
+    if MOD_COMMANDS_CHANNEL_ID == 0:
+        return True
+    return interaction.channel_id == MOD_COMMANDS_CHANNEL_ID
+
+def _mod_channel_mention() -> str:
+    return f"<#{MOD_COMMANDS_CHANNEL_ID}>" if MOD_COMMANDS_CHANNEL_ID else "the moderator-only channel"
 
 # ── Confirm View ─────────────────────────────────────────────────────────────
 class ConfirmView(discord.ui.View):
@@ -381,7 +398,7 @@ class RegisterView(discord.ui.View):
         except Exception:
             pass
 
-# ── PREFIX KOMUTLAR ─────────────────────────────────────────────────────────
+# ── PREFIX KOMUTLAR (yalnızca MOD_COMMANDS_CHANNEL_ID) ──────────────────────
 @bot.command(name="ping")
 async def ping_prefix(ctx: commands.Context):
     print("!ping from", ctx.author, "in", ctx.channel)
@@ -390,6 +407,9 @@ async def ping_prefix(ctx: commands.Context):
 @bot.command(name="setup_register")
 @commands.has_permissions(administrator=True)
 async def setup_register_prefix(ctx: commands.Context):
+    if not _mod_channel_ok_for_ctx(ctx):
+        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.", delete_after=8)
+        return
     print("!setup_register from", ctx.author, "in", ctx.channel)
     if ctx.guild is None or ctx.guild.id != GUILD_ID:
         await ctx.reply("Wrong guild.", delete_after=5)
@@ -405,6 +425,9 @@ async def setup_register_prefix(ctx: commands.Context):
 @bot.command(name="role_diag")
 @commands.has_permissions(administrator=True)
 async def role_diag(ctx: commands.Context, member: discord.Member = None):
+    if not _mod_channel_ok_for_ctx(ctx):
+        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.", delete_after=8)
+        return
     guild = ctx.guild
     me = guild.me
     role = guild.get_role(REGISTERED_ROLE_ID)
@@ -418,6 +441,9 @@ async def role_diag(ctx: commands.Context, member: discord.Member = None):
 @bot.command(name="grant_registered")
 @commands.has_permissions(administrator=True)
 async def grant_registered(ctx: commands.Context, target: discord.Member):
+    if not _mod_channel_ok_for_ctx(ctx):
+        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.", delete_after=8)
+        return
     guild = ctx.guild
     role = guild.get_role(REGISTERED_ROLE_ID)
     if not role:
@@ -432,7 +458,9 @@ async def grant_registered(ctx: commands.Context, target: discord.Member):
 @bot.command(name="reset_user")
 @commands.has_permissions(administrator=True)
 async def reset_user(ctx: commands.Context, user_id_or_mention: str):
-    """Allow a user to re-submit (ID or mention). Usage: !reset_user 123456789012345678"""
+    if not _mod_channel_ok_for_ctx(ctx):
+        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.", delete_after=8)
+        return
     uid = None
     if user_id_or_mention.isdigit():
         uid = int(user_id_or_mention)
@@ -444,7 +472,6 @@ async def reset_user(ctx: commands.Context, user_id_or_mention: str):
     if uid is None:
         await ctx.reply("Provide a valid user ID or mention.", delete_after=8)
         return
-
     removed_csv = remove_submission_row(uid)
     submitted_users.discard(uid)
     await ctx.reply(f"Reset done for `<@{uid}>` (csv_removed={removed_csv}).", delete_after=8)
@@ -452,7 +479,9 @@ async def reset_user(ctx: commands.Context, user_id_or_mention: str):
 @bot.command(name="update_email")
 @commands.has_permissions(administrator=True)
 async def update_email(ctx: commands.Context, user_mention_or_id: str, new_email: str):
-    """CSV'de sadece e-postayı günceller ve log embed'ini eşler. Usage: !update_email @user new@example.com"""
+    if not _mod_channel_ok_for_ctx(ctx):
+        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.", delete_after=8)
+        return
     if not EMAIL_RE.fullmatch(new_email):
         await ctx.reply("Invalid email format.", delete_after=8)
         return
@@ -464,11 +493,9 @@ async def update_email(ctx: commands.Context, user_mention_or_id: str, new_email
     except Exception:
         await ctx.reply("Provide a valid user mention or ID.", delete_after=8)
         return
-
     ok = update_submission(uid, new_email=new_email, new_player_id=None)
     if ok:
         await ctx.reply(f"Updated email for `<@{uid}>` → `{new_email}`", delete_after=10)
-        # log mesajı varsa düzenle
         await _edit_log_from_csv(ctx.guild, uid)
     else:
         await ctx.reply("Record not found in CSV.", delete_after=10)
@@ -476,7 +503,9 @@ async def update_email(ctx: commands.Context, user_mention_or_id: str, new_email
 @bot.command(name="update_record")
 @commands.has_permissions(administrator=True)
 async def update_record(ctx: commands.Context, user_mention_or_id: str, new_email: str, new_player_id: str):
-    """CSV'de e-posta + PlayerID günceller ve log embed'ini eşler. Usage: !update_record @user new@example.com 123456789"""
+    if not _mod_channel_ok_for_ctx(ctx):
+        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.", delete_after=8)
+        return
     if not EMAIL_RE.fullmatch(new_email):
         await ctx.reply("Invalid email format.", delete_after=8); return
     if not new_player_id.isdigit() or len(new_player_id) != EXACT_DIGITS:
@@ -489,14 +518,12 @@ async def update_record(ctx: commands.Context, user_mention_or_id: str, new_emai
     except Exception:
         await ctx.reply("Provide a valid user mention or ID.", delete_after=8)
         return
-
     ok = update_submission(uid, new_email=new_email, new_player_id=new_player_id)
     if ok:
         await ctx.reply(
             f"Updated record for `<@{uid}>` → `{new_email}` / `{new_player_id}`",
             delete_after=10,
         )
-        # log mesajı varsa düzenle
         await _edit_log_from_csv(ctx.guild, uid)
     else:
         await ctx.reply("Record not found in CSV.", delete_after=10)
@@ -504,7 +531,9 @@ async def update_record(ctx: commands.Context, user_mention_or_id: str, new_emai
 @bot.command(name="edit_log")
 @commands.has_permissions(administrator=True)
 async def edit_log(ctx: commands.Context, user_mention_or_id: str):
-    """Mevcut CSV'yi baz alarak ilgili kişinin log embed'ini yeniden yazar. Usage: !edit_log @user"""
+    if not _mod_channel_ok_for_ctx(ctx):
+        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.", delete_after=8)
+        return
     try:
         if user_mention_or_id.isdigit():
             uid = int(user_mention_or_id)
@@ -513,15 +542,12 @@ async def edit_log(ctx: commands.Context, user_mention_or_id: str):
     except Exception:
         await ctx.reply("Provide a valid user mention or ID.", delete_after=8)
         return
-
     await _edit_log_from_csv(ctx.guild, uid)
     await ctx.reply("Log message updated (if found).", delete_after=8)
 
 async def _edit_log_from_csv(guild: discord.Guild, uid: int):
-    """CSV'deki veriyi okuyup log_index.json içindeki mesajı düzenler."""
     if guild is None:
         return
-    # CSV'den kayıt bul
     email = None
     player_id = None
     if SAVE_PATH.exists():
@@ -535,29 +561,22 @@ async def _edit_log_from_csv(guild: discord.Guild, uid: int):
                     break
     if email is None:
         return
-
-    # log_index'ten mesaj id al
     index = load_log_index()
     msg_id_str = index.get(str(uid))
     if not msg_id_str:
         return
-
     try:
         msg_id = int(msg_id_str)
     except:
         return
-
     log_ch = guild.get_channel(LOG_CHANNEL_ID)
     if not log_ch:
         return
-
     try:
         msg = await log_ch.fetch_message(msg_id)
     except Exception as e:
         print("fetch_message error:", e)
         return
-
-    # embed'i güncelle
     try:
         new_emb = update_log_message_embed(msg, guild.get_member(uid) or guild._state.user, email, player_id)
         await msg.edit(content=None, embed=new_emb, view=None)
@@ -567,9 +586,12 @@ async def _edit_log_from_csv(guild: discord.Guild, uid: int):
 @bot.command(name="sub_count")
 @commands.has_permissions(administrator=True)
 async def sub_count(ctx: commands.Context):
+    if not _mod_channel_ok_for_ctx(ctx):
+        await ctx.reply(f"This command can only be used in {_mod_channel_mention()}.", delete_after=8)
+        return
     await ctx.reply(f"Currently stored submissions in memory: **{len(submitted_users)}**", delete_after=8)
 
-# ── SLASH KOMUTLAR ──────────────────────────────────────────────────────────
+# ── SLASH KOMUTLAR (yalnızca MOD_COMMANDS_CHANNEL_ID) ───────────────────────
 @bot.tree.command(name="ping", description="Health check", guild=GOBJ)
 async def ping_slash(interaction: discord.Interaction):
     print("/ping by", interaction.user)
@@ -578,6 +600,12 @@ async def ping_slash(interaction: discord.Interaction):
 @bot.tree.command(name="setup_register", description="Post the REGISTER button (admin only)", guild=GOBJ)
 @app_commands.checks.has_permissions(administrator=True)
 async def setup_register_slash(interaction: discord.Interaction):
+    if not _mod_channel_ok_for_inter(interaction):
+        await interaction.response.send_message(
+            f"This command can only be used in {_mod_channel_mention()}.",
+            ephemeral=True
+        )
+        return
     print("/setup_register by", interaction.user)
     if interaction.guild_id != GUILD_ID:
         await interaction.response.send_message("Wrong guild.", ephemeral=True)
@@ -597,9 +625,7 @@ async def on_ready():
     global submitted_users
     submitted_users = load_submitted_user_ids()
     print(f"✅ Logged in as {bot.user} | Loaded {len(submitted_users)} submissions from CSV")
-
     bot.add_view(RegisterView())  # persistent view
-
     try:
         synced = await bot.tree.sync(guild=GOBJ)
         print(f"Slash synced for guild {GUILD_ID}: {len(synced)} cmd(s)")
