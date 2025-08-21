@@ -25,7 +25,7 @@ BRAND = "Raid Rush"
 COLOR_OK = 0x57F287
 
 BTN_LABEL = "REGISTER"
-POST_TITLE = "Special Reward Registration"
+POST_TITLE = "Community Registration"
 POST_DESC = (
     "Hello Defender!\n\n"
     "Please follow these steps to register for your reward:\n\n"
@@ -177,6 +177,13 @@ class RegisterView(discord.ui.View):
                     except Exception as e:
                         print("Log embed error:", e)
                         await log_ch.send(f"<@{user.id}> email `{email}` | player id `{player_id}`")
+                             
+                     try:
+        role = discord.utils.get(guild.roles, name="Registered")
+        if role:
+            await user.add_roles(role)
+    except Exception as e:
+        print("Role assignment error:", e)
 
             try:
                 emb_ok = discord.Embed(description=DM_SUCCESS, color=COLOR_OK)
