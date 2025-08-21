@@ -185,27 +185,31 @@ class RegisterView(discord.ui.View):
                             print("Log plaintext error:", e2)
 
                 # 2) Role assignment (REGISTERED_ROLE_ID env)
+               try:
+    if guild and REGISTERED_ROLE_ID:
+        role = guild.get_role(REGISTERED_ROLE_ID)
+        if role:
+            # Her durumda Member nesnesini al
+            member = guild.get_member(user.id)
+            if member is None:
                 try:
-                    if REGISTERED_ROLE_ID:
-                        role = guild.get_role(REGISTERED_ROLE_ID)
-                        if role:
-                            await user.add_roles(role, reason="Successfully registered")
-                except Exception as e:
-                    print("Role assign error:", e)
+                    member = await guild.fetch_member(user.id)
+                except Exception as fe:
+                    print("fetch_member error:", fe)
+                    member = None
 
-            # --- DM confirmation ---
-            try:
-                emb_ok = discord.Embed(description=DM_SUCCESS, color=COLOR_OK)
-                if ICON_URL:
-                    emb_ok.set_author(name=f"{BRAND} Verify", icon_url=ICON_URL)
-                else:
-                    emb_ok.set_author(name=f"{BRAND} Verify")
-                emb_ok.add_field(name="Email", value=email, inline=True)
-                emb_ok.add_field(name="Player ID", value=f"`{player_id}`", inline=True)
-                await dm.send(embed=emb_ok)
-            except Exception as e:
-                print("DM ok embed error:", e)
-
+            if member:
+                try:
+                    await member.add_roles(role, reason="Successfully registered")
+                    print(f"Role assigned: {role.name} -> {member}")
+                except Exception as e_add:
+                    print("Role add error:", e_add)
+            else:
+                print("Member not found in guild for role assignment.")
+        else:
+            print("Role not found by REGISTERED_ROLE_ID.")
+except Exception as e:
+    print("Role assign block error:", e)
             return
 
 # ===== Prefix commands =====
