@@ -10,6 +10,8 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 REGISTER_POST_CHANNEL_ID = int(os.getenv("REGISTER_POST_CHANNEL_ID", "0"))
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
+REGISTERED_ROLE_ID = int(os.getenv("REGISTERED_ROLE_ID", "0"))
+
 
 # Small startup print to verify env read
 print("CFG => GUILD_ID=", GUILD_ID,
@@ -199,30 +201,30 @@ class RegisterView(discord.ui.View):
                             print("Log plaintext error:", e2)
 
             # 5b) Kayıtlı rolünü ver (REGISTERED_ROLE_ID)
-            try:
-                if guild and REGISTERED_ROLE_ID:
-                    role = guild.get_role(REGISTERED_ROLE_ID)
-                    if role:
-                        member = guild.get_member(user.id)
-                        if member is None:
-                            try:
-                                member = await guild.fetch_member(user.id)
-                            except Exception as fe:
-                                print("fetch_member error:", fe)
-                                member = None
+           try:
+    if guild and REGISTERED_ROLE_ID:
+        role = guild.get_role(REGISTERED_ROLE_ID)
+        if role:
+            member = guild.get_member(user.id)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(user.id)
+                except Exception as fe:
+                    print("fetch_member error:", fe)
+                    member = None
 
-                        if member:
-                            try:
-                                await member.add_roles(role, reason="Successfully registered")
-                                print(f"Role assigned: {role.name} -> {member}")
-                            except Exception as e_add:
-                                print("Role add error:", e_add)
-                        else:
-                            print("Member not found in guild for role assignment.")
-                    else:
-                        print("Role not found by REGISTERED_ROLE_ID.")
-            except Exception as e:
-                print("Role assign block error:", e)
+            if member:
+                try:
+                    await member.add_roles(role, reason="Successfully registered")
+                    print(f"Role assigned: {role.name} -> {member}")
+                except Exception as e_add:
+                    print("Role add error:", e_add)
+            else:
+                print("Member not found in guild for role assignment.")
+        else:
+            print("Role not found by REGISTERED_ROLE_ID.")
+except Exception as e:
+    print("Role assign block error:", e)
 
             # 5c) DM onay
             try:
