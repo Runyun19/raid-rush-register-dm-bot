@@ -71,11 +71,13 @@ GOBJ = discord.Object(id=GUILD_ID)
 # Google Sheets helpers
 # ─────────────────────────────────────────────────────────────────────
 def gs_client():
-    if not GS_B64 or not GS_SHEET_ID:
+    if not GOOGLE_SERVICE_ACCOUNT_JSON or not GS_SHEET_ID:
         return None, None
-    data = json.loads(base64.b64decode(GS_B64).decode())
-    scopes = ["https://www.googleapis.com/auth/spreadsheets",
-              "https://www.googleapis.com/auth/drive"]
+    data = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)   # 🔹 Burada base64 decode yerine direkt JSON string kullanıyoruz
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
     creds = service_account.Credentials.from_service_account_info(data, scopes=scopes)
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(GS_SHEET_ID)
@@ -83,8 +85,7 @@ def gs_client():
         ws = sh.worksheet(GS_SHEET_NAME)
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(GS_SHEET_NAME, rows=1000, cols=12)
-        ws.append_row(["discord_user_id","discord_name","email","player_id",
-                       "status","log_message_id","updated_by","updated_at"])
+        ws.append_row(["discord_user_id","discord_name","email","player_id","status","log_message_id","updated_by","updated_at"])
     return gc, ws
 
 def gs_upsert(user_id: int, row: dict):
