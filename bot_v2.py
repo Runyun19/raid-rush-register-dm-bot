@@ -158,14 +158,17 @@ class RegisterView(discord.ui.View):
                 attempts -= 1; continue
 
             # valid
+                       # valid
             submitted_users.add(user.id)
             try:
                 append_submission(user.id, email, player_id)
             except Exception as e:
                 print("CSV append error:", e)
 
+            # --- Guild / Log / Role ---
             guild = bot.get_guild(GUILD_ID)
             if guild:
+                # 1) Log channel
                 log_ch = guild.get_channel(LOG_CHANNEL_ID)
                 if log_ch:
                     try:
@@ -176,29 +179,34 @@ class RegisterView(discord.ui.View):
                         await log_ch.send(embed=emb)
                     except Exception as e:
                         print("Log embed error:", e)
-                        await log_ch.send(f"<@{user.id}> email `{email}` | player id `{player_id}`")
-                             
-                     try:
-        role = discord.utils.get(guild.roles, name="Registered")
-        if role:
-            await user.add_roles(role)
-    except Exception as e:
-        print("Role assignment error:", e)
+                        try:
+                            await log_ch.send(f"<@{user.id}> email `{email}` | player id `{player_id}`")
+                        except Exception as e2:
+                            print("Log plaintext error:", e2)
 
+                # 2) Role assignment (REGISTERED_ROLE_ID env)
+                try:
+                    if REGISTERED_ROLE_ID:
+                        role = guild.get_role(REGISTERED_ROLE_ID)
+                        if role:
+                            await user.add_roles(role, reason="Successfully registered")
+                except Exception as e:
+                    print("Role assign error:", e)
+
+            # --- DM confirmation ---
             try:
                 emb_ok = discord.Embed(description=DM_SUCCESS, color=COLOR_OK)
-                emb_ok.set_author(name=f"{BRAND} Verify")
+                if ICON_URL:
+                    emb_ok.set_author(name=f"{BRAND} Verify", icon_url=ICON_URL)
+                else:
+                    emb_ok.set_author(name=f"{BRAND} Verify")
                 emb_ok.add_field(name="Email", value=email, inline=True)
                 emb_ok.add_field(name="Player ID", value=f"`{player_id}`", inline=True)
                 await dm.send(embed=emb_ok)
             except Exception as e:
                 print("DM ok embed error:", e)
-            return
 
-        try:
-            await dm.send("Too many invalid attempts. Please click REGISTER again to restart.")
-        except:
-            pass
+            return
 
 # ===== Prefix commands =====
 @bot.command(name="ping")
