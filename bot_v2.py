@@ -104,10 +104,12 @@ class RegisterView(discord.ui.View):
         user = interaction.user
         print("Button click from:", user, user.id)
 
+        # 1) Tekrar kayıt kontrolü
         if user.id in submitted_users:
             await interaction.response.send_message(EPHEM_ALREADY, ephemeral=True)
             return
 
+        # 2) DM açmayı dene
         try:
             dm = await user.create_dm()
             await dm.send(DM_GREETING)
@@ -116,8 +118,10 @@ class RegisterView(discord.ui.View):
             await interaction.response.send_message(EPHEM_OPEN_DM, ephemeral=True)
             return
 
+        # 3) Butona bastığına dair ephemeral yanıt
         await interaction.response.send_message("I've sent you a DM. Please check your inbox.", ephemeral=True)
 
+        # 4) Kullanıcıdan DM’de tek mesajda email + playerID bekle
         def check(m: discord.Message):
             return m.author.id == user.id and isinstance(m.channel, discord.DMChannel)
 
@@ -135,40 +139,50 @@ class RegisterView(discord.ui.View):
             content = msg.content.strip().replace("\n", " ")
             parts = content.split()
             if len(parts) != 2:
-                try: await dm.send(DM_HINT)
-                except: pass
+                try:
+                    await dm.send(DM_HINT)
+                except Exception:
+                    pass
                 attempts -= 1
                 continue
 
             email, player_id = parts[0].strip(), parts[1].strip()
 
             if not EMAIL_RE.fullmatch(email):
-                try: await dm.send(DM_INVALID_EMAIL)
-                except: pass
-                attempts -= 1; continue
+                try:
+                    await dm.send(DM_INVALID_EMAIL)
+                except Exception:
+                    pass
+                attempts -= 1
+                continue
 
             if not player_id.isdigit():
-                try: await dm.send(DM_INVALID_DIGITS)
-                except: pass
-                attempts -= 1; continue
+                try:
+                    await dm.send(DM_INVALID_DIGITS)
+                except Exception:
+                    pass
+                attempts -= 1
+                continue
 
             if len(player_id) != EXACT_DIGITS:
-                try: await dm.send(DM_INVALID_LENGTH)
-                except: pass
-                attempts -= 1; continue
+                try:
+                    await dm.send(DM_INVALID_LENGTH)
+                except Exception:
+                    pass
+                attempts -= 1
+                continue
 
-            # valid
-                       # valid
+            # 5) VALID → kaydet, logla, rol ver, DM onay gönder
             submitted_users.add(user.id)
             try:
                 append_submission(user.id, email, player_id)
             except Exception as e:
                 print("CSV append error:", e)
 
-            # --- Guild / Log / Role ---
             guild = bot.get_guild(GUILD_ID)
+
+            # 5a) Log kanalına düş
             if guild:
-                # 1) Log channel
                 log_ch = guild.get_channel(LOG_CHANNEL_ID)
                 if log_ch:
                     try:
@@ -184,33 +198,49 @@ class RegisterView(discord.ui.View):
                         except Exception as e2:
                             print("Log plaintext error:", e2)
 
-                # 2) Role assignment (REGISTERED_ROLE_ID env)
-               try:
-    if guild and REGISTERED_ROLE_ID:
-        role = guild.get_role(REGISTERED_ROLE_ID)
-        if role:
-            # Her durumda Member nesnesini al
-            member = guild.get_member(user.id)
-            if member is None:
-                try:
-                    member = await guild.fetch_member(user.id)
-                except Exception as fe:
-                    print("fetch_member error:", fe)
-                    member = None
+            # 5b) Kayıtlı rolünü ver (REGISTERED_ROLE_ID)
+            try:
+                if guild and REGISTERED_ROLE_ID:
+                    role = guild.get_role(REGISTERED_ROLE_ID)
+                    if role:
+                        member = guild.get_member(user.id)
+                        if member is None:
+                            try:
+                                member = await guild.fetch_member(user.id)
+                            except Exception as fe:
+                                print("fetch_member error:", fe)
+                                member = None
 
-            if member:
-                try:
-                    await member.add_roles(role, reason="Successfully registered")
-                    print(f"Role assigned: {role.name} -> {member}")
-                except Exception as e_add:
-                    print("Role add error:", e_add)
-            else:
-                print("Member not found in guild for role assignment.")
-        else:
-            print("Role not found by REGISTERED_ROLE_ID.")
-except Exception as e:
-    print("Role assign block error:", e)
-            return
+                        if member:
+                            try:
+                                await member.add_roles(role, reason="Successfully registered")
+                                print(f"Role assigned: {role.name} -> {member}")
+                            except Exception as e_add:
+                                print("Role add error:", e_add)
+                        else:
+                            print("Member not found in guild for role assignment.")
+                    else:
+                        print("Role not found by REGISTERED_ROLE_ID.")
+            except Exception as e:
+                print("Role assign block error:", e)
+
+            # 5c) DM onay
+            try:
+                emb_ok = discord.Embed(description=DM_SUCCESS, color=COLOR_OK)
+                emb_ok.set_author(name=f"{BRAND} Verify")
+                emb_ok.add_field(name="Email", value=email, inline=True)
+                emb_ok.add_field(name="Player ID", value=f"`{player_id}`", inline=True)
+                await dm.send(embed=emb_ok)
+            except Exception as e:
+                print("DM ok embed error:", e)
+
+            return  # başarıyla bitti
+
+        # 6) Çok fazla hatalı deneme
+        try:
+            await dm.send("Too many invalid attempts. Please click REGISTER again to restart.")
+        except Exception:
+            pass
 
 # ===== Prefix commands =====
 @bot.command(name="ping")
