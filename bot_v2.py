@@ -2,20 +2,27 @@
 import os
 import re
 import csv
+import json
 import asyncio
 from pathlib import Path
+from typing import Optional
 
 import discord
 from discord.ext import commands
 from discord import app_commands
 
 # ── ENV ──────────────────────────────────────────────────────────────────────
-# Railway Variables (veya .env yerel kullanım)
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 REGISTER_POST_CHANNEL_ID = int(os.getenv("REGISTER_POST_CHANNEL_ID", "0"))
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
 REGISTERED_ROLE_ID = int(os.getenv("REGISTERED_ROLE_ID", "0"))
+
+# İletişim yönlendirmesi (default: @runyun & @aurilis)
+CONTACT_MENTION = os.getenv(
+    "CONTACT_MENTION",
+    "<@1358693833428308150> & <@940252755237412945>"
+)
 
 print(
     "CFG =>",
@@ -23,6 +30,7 @@ print(
     f"REGISTER_POST_CHANNEL_ID={REGISTER_POST_CHANNEL_ID}",
     f"LOG_CHANNEL_ID={LOG_CHANNEL_ID}",
     f"REGISTERED_ROLE_ID={REGISTERED_ROLE_ID}",
+    f"CONTACT_MENTION={CONTACT_MENTION}",
 )
 
 # ── KURALLAR / METINLER ──────────────────────────────────────────────────────
@@ -48,7 +56,7 @@ POST_DESC = (
 
 DM_GREETING = (
     "Hi! Let's complete your registration.\n\n"
-    "Please send your **email and Player ID** in one message separated by space.\n"
+    "Please send your **Email** and **Player ID** in one message separated by a space.\n"
     "Example: `email@example.com 123456789`"
 )
 DM_HINT = (
@@ -65,10 +73,22 @@ EPHEM_OPEN_DM = (
     "I couldn’t DM you. Please enable **Direct Messages** from server members "
     "(User Settings → Privacy) and click **REGISTER** again."
 )
-EPHEM_ALREADY = "You have already submitted your information. Updates are disabled."
+EPHEM_ALREADY = (
+    "You have already submitted your information. Updates are disabled.\n"
+    f"If you need a change, please contact {CONTACT_MENTION}."
+)
 
-# ── KALICILIK (CSV) ──────────────────────────────────────────────────────────
+CONFIRM_TITLE = "Confirm your information"
+CONFIRM_DESC = (
+    "Please review your details below.\n\n"
+    "If everything looks correct, click **Confirm**.\n"
+    "If you need to change something, click **Edit** to re-enter your info.\n\n"
+    f"If you still need help, contact {CONTACT_MENTION}."
+)
+
+# ── KALICILIK: CSV + LOG INDEX ───────────────────────────────────────────────
 SAVE_PATH = Path("submissions.csv")
+LOG_INDEX_PATH = Path("log_index.json")  # { "<discord_user_id>": "<log_message_id>" }
 
 def load_submitted_user_ids() -> set[int]:
     ids = set()
@@ -92,7 +112,8 @@ def append_submission(discord_user_id: int, email: str, player_id: str):
             w.writerow(["discord_user_id", "email", "player_id"])
         w.writerow([discord_user_id, email, player_id])
 
-def remove_submission_row(discord_user_id: int) -> bool:
+def update_submission(discord_user_id: int, new_email: Optional[str] = None, new_player_id: Optional[str] = None) -> bool:
+    """CSV'de ilgili kullanıcı satırını günceller. True/False döner."""
     if not SAVE_PATH.exists():
         return False
     changed = False
@@ -102,8 +123,11 @@ def remove_submission_row(discord_user_id: int) -> bool:
         for r in reader:
             uid = r.get("discord_user_id", "")
             if uid and uid.isdigit() and int(uid) == discord_user_id:
+                if new_email is not None:
+                    r["email"] = new_email
+                if new_player_id is not None:
+                    r["player_id"] = new_player_id
                 changed = True
-                continue
             rows.append(r)
     if changed:
         with SAVE_PATH.open("w", newline="") as f:
@@ -113,16 +137,59 @@ def remove_submission_row(discord_user_id: int) -> bool:
                 w.writerow(r)
     return changed
 
+def load_log_index() -> dict:
+    if LOG_INDEX_PATH.exists():
+        try:
+            return json.loads(LOG_INDEX_PATH.read_text())
+        except Exception as e:
+            print("log_index load error:", e)
+    return {}
+
+def save_log_index(index: dict):
+    try:
+        LOG_INDEX_PATH.write_text(json.dumps(index))
+    except Exception as e:
+        print("log_index save error:", e)
+
+def update_log_message_embed(message: discord.Message, user: discord.User | discord.Member, email: str, player_id: str):
+    emb = discord.Embed(title="New Submission (Updated)", color=0x2ECC71)
+    emb.add_field(name="Discord", value=f"{user} (`{user.id}`)", inline=False)
+    emb.add_field(name="Email", value=email, inline=True)
+    emb.add_field(name="Player ID", value=player_id, inline=True)
+    return emb
+
 # ── BOT / INTENTS ────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
 intents.members = True
-intents.message_content = True  # prefix komutları için gerekli
+intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 submitted_users: set[int] = set()
 
-GOBJ = discord.Object(id=GUILD_ID)  # tek sunucuya hızlı slash sync
+GOBJ = discord.Object(id=GUILD_ID)
 
-# ── REGISTER BUTON VIEW ─────────────────────────────────────────────────────
+# ── Confirm View ─────────────────────────────────────────────────────────────
+class ConfirmView(discord.ui.View):
+    def __init__(self, requester_id: int, timeout: float | None = 120):
+        super().__init__(timeout=timeout)
+        self.requester_id = requester_id
+        self.confirmed: bool | None = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.requester_id
+
+    @discord.ui.button(label="✅ Confirm", style=discord.ButtonStyle.success)
+    async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.confirmed = True
+        await interaction.response.defer()
+        self.stop()
+
+    @discord.ui.button(label="✏️ Edit", style=discord.ButtonStyle.secondary)
+    async def edit_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.confirmed = False
+        await interaction.response.defer()
+        self.stop()
+
+# ── REGISTER BUTTON VIEW ─────────────────────────────────────────────────────
 class RegisterView(discord.ui.View):
     def __init__(self, timeout=None):
         super().__init__(timeout=timeout)
@@ -200,7 +267,34 @@ class RegisterView(discord.ui.View):
                 attempts -= 1
                 continue
 
-            # 5) VALID → kaydet, logla, rol ver, DM onay
+            # 5) SON ONAY (Confirm/Edit)
+            try:
+                emb_confirm = discord.Embed(title=CONFIRM_TITLE, description=CONFIRM_DESC, color=0xF1C40F)
+                emb_confirm.add_field(name="Email", value=email, inline=True)
+                emb_confirm.add_field(name="Player ID", value=f"`{player_id}`", inline=True)
+                view = ConfirmView(requester_id=user.id)
+                await dm.send(embed=emb_confirm, view=view)
+                await view.wait()
+            except Exception as e:
+                print("Confirm view error:", e)
+                attempts -= 1
+                continue
+
+            if view.confirmed is False:
+                try:
+                    await dm.send("Okay, please resend your details in the correct format.\n" + DM_HINT)
+                except Exception:
+                    pass
+                continue
+
+            if view.confirmed is None:
+                try:
+                    await dm.send("Confirmation timed out. Please click REGISTER again to restart.")
+                except Exception:
+                    pass
+                return
+
+            # 6) VALID & CONFIRMED → kaydet, logla, rol ver, DM onay
             submitted_users.add(user.id)
             try:
                 append_submission(user.id, email, player_id)
@@ -209,7 +303,8 @@ class RegisterView(discord.ui.View):
 
             guild = bot.get_guild(GUILD_ID)
 
-            # 5a) log kanala
+            # 6a) log kanala
+            saved_log_id = None
             if guild:
                 log_ch = guild.get_channel(LOG_CHANNEL_ID)
                 if log_ch:
@@ -218,15 +313,23 @@ class RegisterView(discord.ui.View):
                         emb.add_field(name="Discord", value=f"{user} (`{user.id}`)", inline=False)
                         emb.add_field(name="Email", value=email, inline=True)
                         emb.add_field(name="Player ID", value=player_id, inline=True)
-                        await log_ch.send(embed=emb)
+                        msg_log = await log_ch.send(embed=emb)
+                        saved_log_id = msg_log.id
                     except Exception as e:
                         print("Log embed error:", e)
                         try:
-                            await log_ch.send(f"<@{user.id}> email `{email}` | player id `{player_id}`")
+                            msg_log = await log_ch.send(f"<@{user.id}> email `{email}` | player id `{player_id}`")
+                            saved_log_id = msg_log.id
                         except Exception as e2:
                             print("Log plaintext error:", e2)
 
-            # 5b) rol ver
+            # 6a-2) log_index'e yaz
+            if saved_log_id:
+                index = load_log_index()
+                index[str(user.id)] = str(saved_log_id)
+                save_log_index(index)
+
+            # 6b) rol ver
             try:
                 if guild and REGISTERED_ROLE_ID:
                     role = guild.get_role(REGISTERED_ROLE_ID)
@@ -260,7 +363,7 @@ class RegisterView(discord.ui.View):
             except Exception as e:
                 print("[ROLE] assign block error:", repr(e))
 
-            # 5c) DM onay
+            # 6c) DM onay
             try:
                 emb_ok = discord.Embed(description=DM_SUCCESS, color=COLOR_OK)
                 emb_ok.set_author(name=f"{BRAND} Verify")
@@ -272,7 +375,7 @@ class RegisterView(discord.ui.View):
 
             return  # başarıyla tamamlandı
 
-        # 6) çok fazla deneme
+        # 7) çok fazla deneme
         try:
             await dm.send("Too many invalid attempts. Please click REGISTER again to restart.")
         except Exception:
@@ -302,7 +405,6 @@ async def setup_register_prefix(ctx: commands.Context):
 @bot.command(name="role_diag")
 @commands.has_permissions(administrator=True)
 async def role_diag(ctx: commands.Context, member: discord.Member = None):
-    """Botun rol yetkilerini ve Registered rolünü kontrol eder."""
     guild = ctx.guild
     me = guild.me
     role = guild.get_role(REGISTERED_ROLE_ID)
@@ -316,7 +418,6 @@ async def role_diag(ctx: commands.Context, member: discord.Member = None):
 @bot.command(name="grant_registered")
 @commands.has_permissions(administrator=True)
 async def grant_registered(ctx: commands.Context, target: discord.Member):
-    """Manuel rol testi: !grant_registered @kullanici"""
     guild = ctx.guild
     role = guild.get_role(REGISTERED_ROLE_ID)
     if not role:
@@ -331,7 +432,7 @@ async def grant_registered(ctx: commands.Context, target: discord.Member):
 @bot.command(name="reset_user")
 @commands.has_permissions(administrator=True)
 async def reset_user(ctx: commands.Context, user_id_or_mention: str):
-    """Admin: allow a user to re-submit (by ID or mention). Usage: !reset_user 123456789012345678"""
+    """Allow a user to re-submit (ID or mention). Usage: !reset_user 123456789012345678"""
     uid = None
     if user_id_or_mention.isdigit():
         uid = int(user_id_or_mention)
@@ -347,6 +448,121 @@ async def reset_user(ctx: commands.Context, user_id_or_mention: str):
     removed_csv = remove_submission_row(uid)
     submitted_users.discard(uid)
     await ctx.reply(f"Reset done for `<@{uid}>` (csv_removed={removed_csv}).", delete_after=8)
+
+@bot.command(name="update_email")
+@commands.has_permissions(administrator=True)
+async def update_email(ctx: commands.Context, user_mention_or_id: str, new_email: str):
+    """CSV'de sadece e-postayı günceller ve log embed'ini eşler. Usage: !update_email @user new@example.com"""
+    if not EMAIL_RE.fullmatch(new_email):
+        await ctx.reply("Invalid email format.", delete_after=8)
+        return
+    try:
+        if user_mention_or_id.isdigit():
+            uid = int(user_mention_or_id)
+        else:
+            uid = int(user_mention_or_id.replace("<@", "").replace(">", "").replace("!", ""))
+    except Exception:
+        await ctx.reply("Provide a valid user mention or ID.", delete_after=8)
+        return
+
+    ok = update_submission(uid, new_email=new_email, new_player_id=None)
+    if ok:
+        await ctx.reply(f"Updated email for `<@{uid}>` → `{new_email}`", delete_after=10)
+        # log mesajı varsa düzenle
+        await _edit_log_from_csv(ctx.guild, uid)
+    else:
+        await ctx.reply("Record not found in CSV.", delete_after=10)
+
+@bot.command(name="update_record")
+@commands.has_permissions(administrator=True)
+async def update_record(ctx: commands.Context, user_mention_or_id: str, new_email: str, new_player_id: str):
+    """CSV'de e-posta + PlayerID günceller ve log embed'ini eşler. Usage: !update_record @user new@example.com 123456789"""
+    if not EMAIL_RE.fullmatch(new_email):
+        await ctx.reply("Invalid email format.", delete_after=8); return
+    if not new_player_id.isdigit() or len(new_player_id) != EXACT_DIGITS:
+        await ctx.reply(f"Player ID must be exactly {EXACT_DIGITS} digits.", delete_after=8); return
+    try:
+        if user_mention_or_id.isdigit():
+            uid = int(user_mention_or_id)
+        else:
+            uid = int(user_mention_or_id.replace("<@", "").replace(">", "").replace("!", ""))
+    except Exception:
+        await ctx.reply("Provide a valid user mention or ID.", delete_after=8)
+        return
+
+    ok = update_submission(uid, new_email=new_email, new_player_id=new_player_id)
+    if ok:
+        await ctx.reply(
+            f"Updated record for `<@{uid}>` → `{new_email}` / `{new_player_id}`",
+            delete_after=10,
+        )
+        # log mesajı varsa düzenle
+        await _edit_log_from_csv(ctx.guild, uid)
+    else:
+        await ctx.reply("Record not found in CSV.", delete_after=10)
+
+@bot.command(name="edit_log")
+@commands.has_permissions(administrator=True)
+async def edit_log(ctx: commands.Context, user_mention_or_id: str):
+    """Mevcut CSV'yi baz alarak ilgili kişinin log embed'ini yeniden yazar. Usage: !edit_log @user"""
+    try:
+        if user_mention_or_id.isdigit():
+            uid = int(user_mention_or_id)
+        else:
+            uid = int(user_mention_or_id.replace("<@", "").replace(">", "").replace("!", ""))
+    except Exception:
+        await ctx.reply("Provide a valid user mention or ID.", delete_after=8)
+        return
+
+    await _edit_log_from_csv(ctx.guild, uid)
+    await ctx.reply("Log message updated (if found).", delete_after=8)
+
+async def _edit_log_from_csv(guild: discord.Guild, uid: int):
+    """CSV'deki veriyi okuyup log_index.json içindeki mesajı düzenler."""
+    if guild is None:
+        return
+    # CSV'den kayıt bul
+    email = None
+    player_id = None
+    if SAVE_PATH.exists():
+        with SAVE_PATH.open("r", newline="") as f:
+            reader = csv.DictReader(f)
+            for r in reader:
+                v = r.get("discord_user_id", "")
+                if v and v.isdigit() and int(v) == uid:
+                    email = r.get("email", "")
+                    player_id = r.get("player_id", "")
+                    break
+    if email is None:
+        return
+
+    # log_index'ten mesaj id al
+    index = load_log_index()
+    msg_id_str = index.get(str(uid))
+    if not msg_id_str:
+        return
+
+    try:
+        msg_id = int(msg_id_str)
+    except:
+        return
+
+    log_ch = guild.get_channel(LOG_CHANNEL_ID)
+    if not log_ch:
+        return
+
+    try:
+        msg = await log_ch.fetch_message(msg_id)
+    except Exception as e:
+        print("fetch_message error:", e)
+        return
+
+    # embed'i güncelle
+    try:
+        new_emb = update_log_message_embed(msg, guild.get_member(uid) or guild._state.user, email, player_id)
+        await msg.edit(content=None, embed=new_emb, view=None)
+    except Exception as e:
+        print("edit_log_message error:", e)
 
 @bot.command(name="sub_count")
 @commands.has_permissions(administrator=True)
@@ -382,10 +598,8 @@ async def on_ready():
     submitted_users = load_submitted_user_ids()
     print(f"✅ Logged in as {bot.user} | Loaded {len(submitted_users)} submissions from CSV")
 
-    # persistent view
-    bot.add_view(RegisterView())
+    bot.add_view(RegisterView())  # persistent view
 
-    # slash sync (guild bound)
     try:
         synced = await bot.tree.sync(guild=GOBJ)
         print(f"Slash synced for guild {GUILD_ID}: {len(synced)} cmd(s)")
