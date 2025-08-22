@@ -429,6 +429,40 @@ async def reset_user(ctx: commands.Context, who: str):
         "updated_at": now_iso()
     })
     await ctx.reply(f"Reset done for <@{member.id}>.")
+    
+@bot.command(name="delete_user")
+@commands.has_permissions(administrator=True)
+async def delete_user(ctx: commands.Context, user_id_or_mention: str):
+    """Tamamen siler: hem memory'den hem Google Sheet'ten. Kullanım: !delete_user @user"""
+    uid = None
+    if user_id_or_mention.isdigit():
+        uid = int(user_id_or_mention)
+    else:
+        try:
+            uid = int(user_id_or_mention.replace("<@", "").replace(">", "").replace("!", ""))
+        except:
+            uid = None
+
+    if uid is None:
+        await ctx.reply("Please provide a valid user ID or mention.", delete_after=8)
+        return
+
+    # 1) Memory’den çıkar
+    submitted_users.discard(uid)
+
+    # 2) Google Sheet’ten sil
+    try:
+        gc, ws = gs_client()
+        if ws:
+            cell = ws.find(str(uid))
+            if cell:
+                ws.delete_rows(cell.row)
+                await ctx.reply(f"User `<@{uid}>` deleted from Google Sheet & memory.", delete_after=8)
+                return
+    except Exception as e:
+        print("[GS] delete_user error:", e)
+
+    await ctx.reply(f"Could not delete `<@{uid}>` from Google Sheet, but removed from memory.", delete_after=8)
 
 @bot.command(name="update_email")
 @commands.has_permissions(manage_guild=True)
