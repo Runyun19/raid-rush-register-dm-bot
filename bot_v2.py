@@ -1,3 +1,5 @@
+# bot_v2.py
+
 import os, re, csv, io, base64, json, asyncio, datetime
 from pathlib import Path
 
@@ -8,25 +10,29 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 
-# ── Google Sheets
-import gspread
-from google.oauth2 import service_account
-
-# ── ENV
+# ─────────────────────────────────────────────────────────────────────
+# ENV
+# ─────────────────────────────────────────────────────────────────────
 TOKEN = os.getenv("DISCORD_TOKEN")
+
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 REGISTER_POST_CHANNEL_ID = int(os.getenv("REGISTER_POST_CHANNEL_ID", "0"))
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
 MOD_COMMANDS_CHANNEL_ID = int(os.getenv("MOD_COMMANDS_CHANNEL_ID", "0"))
 REGISTERED_ROLE_ID = int(os.getenv("REGISTERED_ROLE_ID", "0"))
 
-GS_B64 = os.getenv("GOOGLE_SERVICE_ACCOUNT_B64", "")
-GS_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "")
-GS_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "submissions")
+# Google Sheets kimlik bilgileri (ikisi de desteklenir)
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+GOOGLE_SERVICE_ACCOUNT_B64  = os.getenv("GOOGLE_SERVICE_ACCOUNT_B64", "").strip()
+GS_SHEET_ID   = os.getenv("GOOGLE_SHEET_ID", "").strip()
+GS_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "submissions").strip()
 
-# ── Sabitler / kurallar
+# ─────────────────────────────────────────────────────────────────────
+# Sabitler / Kurallar / Metinler
+# ─────────────────────────────────────────────────────────────────────
 EXACT_DIGITS = 9
 EMAIL_RE = re.compile(r"^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$", re.I)
+
 BRAND = "Raid Rush"
 COLOR_OK = 0x57F287
 
@@ -59,31 +65,81 @@ EPHEM_OPEN_DM = ("I couldn’t DM you. Enable **Direct Messages** "
                  "from server members (Privacy) and click **REGISTER** again.")
 EPHEM_ALREADY = "You have already submitted. Updates are disabled."
 
-# ── in-memory
+# ─────────────────────────────────────────────────────────────────────
+# In-memory & CSV yedek
+# ─────────────────────────────────────────────────────────────────────
 submitted_users: set[int] = set()
 SAVE_PATH = Path("submissions.csv")  # yerel yedek (opsiyonel)
 
-# ── Discord intents
+def csv_append(discord_user_id: int, email: str, player_id: str):
+    new_file = not SAVE_PATH.exists()
+    with SAVE_PATH.open("a", newline="") as f:
+        w = csv.writer(f)
+        if new_file:
+            w.writerow(["discord_user_id","discord_name","email","player_id",
+                        "status","log_message_id","updated_by","updated_at"])
+        w.writerow([discord_user_id,"",email,player_id,"confirmed","","",
+                    datetime.datetime.utcnow().isoformat()])
+
+def csv_remove(discord_user_id: int):
+    if not SAVE_PATH.exists(): return False
+    rows, changed = [], False
+    with SAVE_PATH.open("r", newline="") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            if r.get("discord_user_id","") == str(discord_user_id):
+                changed = True
+            else:
+                rows.append(r)
+    if changed:
+        with SAVE_PATH.open("w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["discord_user_id","discord_name","email","player_id",
+                                              "status","log_message_id","updated_by","updated_at"])
+            w.writeheader()
+            for r in rows: w.writerow(r)
+    return changed
+
+# ─────────────────────────────────────────────────────────────────────
+# Discord
+# ─────────────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 GOBJ = discord.Object(id=GUILD_ID)
 
+def ensure_mod_channel(ctx_or_inter) -> bool:
+    """Komutların yalnızca mod kanalında çalışması için kontrol."""
+    if MOD_COMMANDS_CHANNEL_ID == 0:
+        return True
+    ch_id = getattr(getattr(ctx_or_inter, "channel", None), "id", None)
+    return ch_id == MOD_COMMANDS_CHANNEL_ID
+
+async def resolve_member(ctx: commands.Context, who: str) -> discord.Member | None:
+    """ID, mention veya isimle üyeyi bul."""
+    guild = ctx.guild
+    if not guild: return None
+    # numeric id
+    if who.isdigit():
+        return guild.get_member(int(who)) or await guild.fetch_member(int(who))
+    # mention
+    who = who.replace("<@", "").replace(">", "").replace("!", "")
+    if who.isdigit():
+        return guild.get_member(int(who)) or await guild.fetch_member(int(who))
+    # name search
+    who = who.lower()
+    for m in guild.members:
+        if who in str(m).lower():
+            return m
+    return None
+
+def now_iso() -> str:
+    return datetime.datetime.utcnow().isoformat()
+
 # ─────────────────────────────────────────────────────────────────────
-# ---------------- Google Sheets helpers ----------------
-import json, base64, datetime
-import gspread
-from google.oauth2 import service_account
-
-# ENV'leri oku (ikisi de desteklenir: JSON veya B64)
-GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
-GOOGLE_SERVICE_ACCOUNT_B64  = os.getenv("GOOGLE_SERVICE_ACCOUNT_B64", "").strip()
-GS_SHEET_ID   = os.getenv("GOOGLE_SHEET_ID", "").strip()
-GS_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "").strip()
-
+# Google Sheets helpers
+# ─────────────────────────────────────────────────────────────────────
 def _debug_env_short(val: str, label: str) -> str:
-    """Gizlilik için sadece uzunluğu/başını loglayalım."""
     if not val:
         return f"{label}=<empty>"
     return f"{label}=len:{len(val)} head:{val[:20]!r}"
@@ -109,14 +165,11 @@ def gs_client():
             data = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
         except Exception as e:
             print("[GS] JSON env parse error:", repr(e))
-
     if data is None and GOOGLE_SERVICE_ACCOUNT_B64:
         try:
-            decoded = base64.b64decode(GOOGLE_SERVICE_ACCOUNT_B64)
-            data = json.loads(decoded.decode("utf-8"))
+            data = json.loads(base64.b64decode(GOOGLE_SERVICE_ACCOUNT_B64).decode("utf-8"))
         except Exception as e:
             print("[GS] B64 env decode/parse error:", repr(e))
-
     if data is None:
         print("[GS] No usable credentials data found.")
         return None, None
@@ -124,11 +177,12 @@ def gs_client():
     try:
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
+            "https://www.googleapis.com/auth/drive",
         ]
         creds = service_account.Credentials.from_service_account_info(data, scopes=scopes)
         gc = gspread.authorize(creds)
         sh = gc.open_by_key(GS_SHEET_ID)
+        # worksheet hazırla
         try:
             ws = sh.worksheet(GS_SHEET_NAME)
         except gspread.WorksheetNotFound:
@@ -140,12 +194,9 @@ def gs_client():
         print("[GS] gs_client fatal error:", repr(e))
         return None, None
 
-import datetime  # dosyanın tepesinde YOKSA ekleyin
-
 def gs_upsert(discord_id: int, payload: dict) -> bool:
     """
     A sütununda discord_user_id varsa UPDATE, yoksa APPEND.
-    gspread sürüm farklarına dayanıklı.
     """
     try:
         _, ws = gs_client()
@@ -153,7 +204,7 @@ def gs_upsert(discord_id: int, payload: dict) -> bool:
             print("[GS] upsert: worksheet not ready")
             return False
 
-        # Bul (bazı sürümlerde in_column yok; varsa kullanıyoruz)
+        # ID'yi bul
         cell = None
         try:
             try:
@@ -163,10 +214,7 @@ def gs_upsert(discord_id: int, payload: dict) -> bool:
         except Exception:
             cell = None
 
-        now = datetime.datetime.utcnow().isoformat()
-
-        # Sheet kolon sırası:
-        # discord_user_id | discord_name | email | player_id | status | log_message_id | updated_by | updated_at
+        now = now_iso()
         row_values = [
             str(discord_id),
             payload.get("discord_name", ""),
@@ -175,7 +223,7 @@ def gs_upsert(discord_id: int, payload: dict) -> bool:
             payload.get("status", "ok"),
             payload.get("log_message_id", ""),
             payload.get("updated_by", "bot"),
-            now,
+            payload.get("updated_at", now),
         ]
 
         if cell and getattr(cell, "row", None):
@@ -187,61 +235,23 @@ def gs_upsert(discord_id: int, payload: dict) -> bool:
             print(f"[GS] appended new row for {discord_id}")
 
         return True
-
     except Exception as e:
         print("[GS] upsert error:", repr(e))
         return False
 
-# — Test komutu: moderator-only kanalda çalışır —
-@bot.command(name="gs_test")
-@commands.has_permissions(administrator=True)
-async def gs_test(ctx: commands.Context):
-    ch_ok = (MOD_COMMANDS_CHANNEL_ID == 0) or (ctx.channel.id == MOD_COMMANDS_CHANNEL_ID)
-    if not ch_ok:
-        await ctx.reply("Use this in the moderator-only channel.", delete_after=8)
-        return
-    ok = gs_upsert(ctx.author.id, {
-        "discord_user_id": str(ctx.author.id),
-        "discord_name": str(ctx.author),
-        "email": "test@example.com",
-        "player_id": "123456789",
-        "status": "test",
-        "log_message_id": "",
-        "updated_by": str(ctx.author)
-    })
-    await ctx.reply(f"gs_test => {'OK' if ok else 'FAILED'}", delete_after=8)
-
-# ─────────────────────────────────────────────────────────────────────
-# CSV yedek (opsiyonel)
-# ─────────────────────────────────────────────────────────────────────
-def csv_append(discord_user_id: int, email: str, player_id: str):
-    new_file = not SAVE_PATH.exists()
-    with SAVE_PATH.open("a", newline="") as f:
-        w = csv.writer(f)
-        if new_file:
-            w.writerow(["discord_user_id","discord_name","email","player_id",
-                        "status","log_message_id","updated_by","updated_at"])
-        w.writerow([discord_user_id,"",email,player_id,"confirmed","","",
-                    datetime.datetime.utcnow().isoformat()])
-
-def csv_remove(discord_user_id: int):
-    if not SAVE_PATH.exists(): return False
-    rows = []
-    changed = False
-    with SAVE_PATH.open("r", newline="") as f:
-        reader = csv.DictReader(f)
-        for r in reader:
-            if r.get("discord_user_id","") == str(discord_user_id):
-                changed = True
-            else:
-                rows.append(r)
-    if changed:
-        with SAVE_PATH.open("w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=["discord_user_id","discord_name","email","player_id",
-                                              "status","log_message_id","updated_by","updated_at"])
-            w.writeheader()
-            for r in rows: w.writerow(r)
-    return changed
+def gs_fetch_all_as_csv_bytes() -> bytes | None:
+    """Tüm sheet’i CSV olarak döndürür (export için)."""
+    try:
+        _, ws = gs_client()
+        if not ws: return None
+        rows = ws.get_all_values()
+        out = io.StringIO()
+        writer = csv.writer(out)
+        writer.writerows(rows)
+        return out.getvalue().encode("utf-8")
+    except Exception as e:
+        print("[GS] export error:", repr(e))
+        return None
 
 # ─────────────────────────────────────────────────────────────────────
 # DM akışı + REGISTER butonu
@@ -282,6 +292,7 @@ class RegisterView(discord.ui.View):
             await interaction.response.send_message(EPHEM_ALREADY, ephemeral=True)
             return
 
+        # DM aç
         try:
             dm = await user.create_dm()
             await dm.send(DM_GREETING)
@@ -325,20 +336,19 @@ class RegisterView(discord.ui.View):
 
             try:
                 await view.wait()
-            except:  # güvenlik
+            except:
                 pass
 
             if view.result is not True:
-                # İptal edildi
-                return
+                return  # iptal edildi
 
-            # onaylandı
+            # Onaylandı → kaydet
             submitted_users.add(user.id)
 
-            # Log kanalı
             guild = bot.get_guild(GUILD_ID)
             log_message_id = ""
             if guild:
+                # Log
                 log_ch = guild.get_channel(LOG_CHANNEL_ID)
                 if log_ch:
                     e = discord.Embed(title="New Submission", color=0x3498DB)
@@ -359,8 +369,8 @@ class RegisterView(discord.ui.View):
                             except Exception as e_add:
                                 print("Role add error:", e_add)
 
-            # Sheets + CSV
-            now = datetime.datetime.utcnow().isoformat()
+            # Sheet + CSV
+            now = now_iso()
             gs_upsert(user.id, {
                 "discord_user_id": str(user.id),
                 "discord_name": str(user),
@@ -384,36 +394,7 @@ class RegisterView(discord.ui.View):
         await dm.send("Too many invalid attempts. Click REGISTER again to restart.")
 
 # ─────────────────────────────────────────────────────────────────────
-# Yardımcılar
-# ─────────────────────────────────────────────────────────────────────
-def ensure_mod_channel(ctx_or_inter) -> bool:
-    ch_id = None
-    if isinstance(ctx_or_inter, commands.Context):
-        ch_id = ctx_or_inter.channel.id if ctx_or_inter.channel else None
-    else:
-        ch_id = ctx_or_inter.channel.id if ctx_or_inter.channel else None
-    return (MOD_COMMANDS_CHANNEL_ID and ch_id == MOD_COMMANDS_CHANNEL_ID)
-
-async def resolve_member(ctx: commands.Context, who: str) -> discord.Member | None:
-    guild = ctx.guild
-    if not guild: return None
-    if who.isdigit():
-        return guild.get_member(int(who)) or await guild.fetch_member(int(who))
-    # mention
-    who = who.replace("<@", "").replace(">", "").replace("!", "")
-    if who.isdigit():
-        return guild.get_member(int(who)) or await guild.fetch_member(int(who))
-    # name arama (en yakın eşleşme)
-    who = who.lower()
-    for m in guild.members:
-        if who in str(m).lower():
-            return m
-    return None
-
-def now_iso(): return datetime.datetime.utcnow().isoformat()
-
-# ─────────────────────────────────────────────────────────────────────
-# PREFIX KOMUTLAR (yalnızca MOD_COMMANDS_CHANNEL_ID)
+# Prefix Komutlar (yalnızca MOD_COMMANDS_CHANNEL_ID)
 # ─────────────────────────────────────────────────────────────────────
 @bot.command(name="ping")
 async def ping_prefix(ctx: commands.Context):
@@ -426,8 +407,7 @@ async def setup_register(ctx: commands.Context):
     guild = ctx.guild
     ch = guild.get_channel(REGISTER_POST_CHANNEL_ID) if guild else None
     if not ch:
-        await ctx.reply("REGISTER_POST_CHANNEL_ID not found.")
-        return
+        await ctx.reply("REGISTER_POST_CHANNEL_ID not found."); return
     emb = discord.Embed(title=POST_TITLE, description=POST_DESC, color=0x5865F2)
     await ch.send(embed=emb, view=RegisterView())
     await ctx.reply("Register post sent.")
@@ -496,22 +476,19 @@ async def edit_log(ctx: commands.Context, who: str):
     member = await resolve_member(ctx, who)
     if not member:
         await ctx.reply("User not found."); return
-    # Sheets'ten mevcut satırı okumaya gerek yok: sadece embed'i yenileyelim
+
     _, ws = gs_client()
     email = player_id = log_msg_id = ""
     if ws:
-        headers = ws.row_values(1)
-        all_rows = ws.get_all_records()
-        for r in all_rows:
+        for r in ws.get_all_records():
             if str(r.get("discord_user_id","")) == str(member.id):
                 email = r.get("email","")
                 player_id = r.get("player_id","")
                 log_msg_id = r.get("log_message_id","")
                 break
+
     guild = ctx.guild
-    if not guild:
-        await ctx.reply("Guild not found."); return
-    log_ch = guild.get_channel(LOG_CHANNEL_ID)
+    log_ch = guild.get_channel(LOG_CHANNEL_ID) if guild else None
     if not log_ch:
         await ctx.reply("LOG_CHANNEL_ID not found."); return
 
@@ -524,8 +501,7 @@ async def edit_log(ctx: commands.Context, who: str):
         try:
             msg = await log_ch.fetch_message(int(log_msg_id))
             await msg.edit(embed=e)
-            await ctx.reply("Log message updated.")
-            return
+            await ctx.reply("Log message updated."); return
         except Exception as ex:
             print("fetch/edit log msg error:", ex)
 
@@ -545,8 +521,7 @@ async def grant_registered(ctx: commands.Context, who: str):
     member = await resolve_member(ctx, who)
     if not member:
         await ctx.reply("User not found."); return
-    guild = ctx.guild
-    role = guild.get_role(REGISTERED_ROLE_ID) if guild else None
+    role = ctx.guild.get_role(REGISTERED_ROLE_ID) if ctx.guild else None
     if not role:
         await ctx.reply("Registered role not found."); return
     try:
@@ -567,8 +542,7 @@ async def export_csv(ctx: commands.Context):
     if not ensure_mod_channel(ctx): return
     data = gs_fetch_all_as_csv_bytes()
     if not data:
-        await ctx.reply("Sheet not configured.")
-        return
+        await ctx.reply("Sheet not configured."); return
     await ctx.reply(file=discord.File(io.BytesIO(data), filename="submissions.csv"))
 
 # ─────────────────────────────────────────────────────────────────────
@@ -581,7 +555,7 @@ async def ping_slash(interaction: discord.Interaction):
 @bot.tree.command(name="setup_register", description="Post the REGISTER button", guild=GOBJ)
 @app_commands.checks.has_permissions(administrator=True)
 async def setup_register_slash(interaction: discord.Interaction):
-    if not ensure_mod_channel(interaction): 
+    if not ensure_mod_channel(interaction):
         await interaction.response.send_message("Use this in the mod commands channel.", ephemeral=True)
         return
     guild = interaction.guild
@@ -597,13 +571,21 @@ async def setup_register_slash(interaction: discord.Interaction):
 # ─────────────────────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
-    # Sheet varsa header garantile
-    gs_client()
+    # Sheet varsa header’ı garantile ve mevcut kayıtları belleğe yükle
+    _, ws = gs_client()
+    if ws:
+        try:
+            for r in ws.get_all_records():
+                uid = str(r.get("discord_user_id","")).strip()
+                if uid.isdigit():
+                    submitted_users.add(int(uid))
+        except Exception as e:
+            print("[GS] preload error:", repr(e))
 
-    # restart sonrası butonun çalışması için
+    # Restart sonrası butonun çalışması için
     bot.add_view(RegisterView())
 
-    # hızlı slash sync
+    # Hızlı slash sync
     try:
         synced = await bot.tree.sync(guild=GOBJ)
         print(f"Slash synced: {len(synced)}")
