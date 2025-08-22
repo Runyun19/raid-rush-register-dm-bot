@@ -60,7 +60,7 @@ DM_INVALID_EMAIL = "Invalid email format. " + DM_HINT
 DM_INVALID_DIGITS = "Player ID must contain only digits. " + DM_HINT
 DM_INVALID_LENGTH = f"Player ID must be exactly {EXACT_DIGITS} digits. " + DM_HINT
 DM_TIMEOUT = "Timed out waiting for your reply. Click REGISTER again to restart."
-DM_SUCCESS = "✅ Saved. Your code will be sent by email."
+DM_SUCCESS = "✅ Saved. Your gift will be sent by email."
 EPHEM_OPEN_DM = ("I couldn’t DM you. Enable **Direct Messages** "
                  "from server members (Privacy) and click **REGISTER** again.")
 EPHEM_ALREADY = "You have already submitted. Updates are disabled."
