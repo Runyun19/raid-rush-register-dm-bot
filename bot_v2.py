@@ -1,4 +1,5 @@
-# bot_v2.py
+# bot_v2.py  (mirror + mevcut kayıt akışı)
+# Kaynak iskelet: kullanıcının paylaştığı bot_v2.py  :contentReference[oaicite:1]{index=1}
 
 import os, re, csv, io, base64, json, asyncio, datetime
 from pathlib import Path
@@ -21,11 +22,19 @@ LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
 MOD_COMMANDS_CHANNEL_ID = int(os.getenv("MOD_COMMANDS_CHANNEL_ID", "0"))
 REGISTERED_ROLE_ID = int(os.getenv("REGISTERED_ROLE_ID", "0"))
 
-# Google Sheets kimlik bilgileri (ikisi de desteklenir)
+# Google Sheets
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
 GOOGLE_SERVICE_ACCOUNT_B64  = os.getenv("GOOGLE_SERVICE_ACCOUNT_B64", "").strip()
 GS_SHEET_ID   = os.getenv("GOOGLE_SHEET_ID", "").strip()
 GS_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "submissions").strip()
+
+# 🔁 Mirror ayarları (yeni)
+MIRROR_TARGET_CHANNEL_ID  = int(os.getenv("MIRROR_TARGET_CHANNEL_ID", "0"))  # kopya mesajların gideceği kanal
+COMMUNITY_MANAGER_ROLE_ID = int(os.getenv("COMMUNITY_MANAGER_ROLE_ID", "0")) # @communitymanager rol ID
+# Birden çok botu desteklemek için virgüllü liste (örn: "159985870458322944,123456789012345678")
+MIRROR_BOT_USER_IDS = {
+    int(x) for x in os.getenv("MIRROR_BOT_USER_IDS", "").replace(" ", "").split(",") if x.isdigit()
+}
 
 # ─────────────────────────────────────────────────────────────────────
 # Sabitler / Kurallar / Metinler
@@ -599,6 +608,64 @@ async def setup_register_slash(interaction: discord.Interaction):
     emb = discord.Embed(title=POST_TITLE, description=POST_DESC, color=0x5865F2)
     await ch.send(embed=emb, view=RegisterView())
     await interaction.response.send_message("Register post sent.", ephemeral=True)
+
+# ─────────────────────────────────────────────────────────────────────
+# MEE6 @communitymanager aynalama (yeni)
+# ─────────────────────────────────────────────────────────────────────
+_mirrored_ids: set[int] = set()
+
+@bot.event
+async def on_message(message: discord.Message):
+    # Komutlar çalışsın:
+    await bot.process_commands(message)
+
+    # Aynalama devre dışıysa çık
+    if MIRROR_TARGET_CHANNEL_ID == 0 or COMMUNITY_MANAGER_ROLE_ID == 0 or not MIRROR_BOT_USERIDS_OK():
+        return
+    if message.guild is None:
+        return
+    if message.author.bot is False:
+        return
+    if message.author.id not in MIRROR_BOT_USER_IDS:
+        return
+    if message.id in _mirrored_ids:
+        return  # zaten kopyalandı
+
+    # Rol etiketi içeriyor mu?
+    role_mention = f"<@&{COMMUNITY_MANAGER_ROLE_ID}>"
+    content = message.content or ""
+    has_role = role_mention in content or any(
+        (getattr(r, "id", 0) == COMMUNITY_MANAGER_ROLE_ID) for r in message.role_mentions
+    )
+    if not has_role:
+        return
+
+    # Hedef kanal
+    target = message.guild.get_channel(MIRROR_TARGET_CHANNEL_ID)
+    if not target or not isinstance(target, (discord.TextChannel, discord.Thread)):
+        return
+
+    # Embed oluştur
+    e = discord.Embed(color=0xFFD166, description=content[:4000] or "*(no text)*")
+    e.set_author(name=f"{message.author} • #{message.channel.name}", icon_url=getattr(message.author.display_avatar, 'url', discord.Embed.Empty))
+    e.add_field(name="Jump", value=f"[Go to message]({message.jump_url})", inline=False)
+
+    # Ekler varsa ilkini göster (çokluysa basitçe say)
+    if message.attachments:
+        att = message.attachments[0]
+        if att.content_type and att.content_type.startswith("image/"):
+            e.set_image(url=att.url)
+        if len(message.attachments) > 1:
+            e.set_footer(text=f"+{len(message.attachments)-1} more attachment(s)")
+
+    try:
+        await target.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
+        _mirrored_ids.add(message.id)
+    except Exception as err:
+        print("[MIRROR] send error:", err)
+
+def MIRROR_BOT_USERIDS_OK() -> bool:
+    return len(MIRROR_BOT_USER_IDS) > 0
 
 # ─────────────────────────────────────────────────────────────────────
 # on_ready
