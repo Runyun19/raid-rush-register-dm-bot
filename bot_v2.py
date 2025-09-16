@@ -1,5 +1,6 @@
-# bot_v2.py  (mirror + mevcut kayıt akışı)
-# Kaynak iskelet: kullanıcının paylaştığı bot_v2.py  :contentReference[oaicite:1]{index=1}
+# bot_v2.py  (mirror + mevcut kayıt akışı; fixed)
+# - MEE6 @communitymanager aynalama: set_author avatar None fix
+# - Google Sheets preload: get_all_values() ile header uyarısı yok
 
 import os, re, csv, io, base64, json, asyncio, datetime
 from pathlib import Path
@@ -28,7 +29,7 @@ GOOGLE_SERVICE_ACCOUNT_B64  = os.getenv("GOOGLE_SERVICE_ACCOUNT_B64", "").strip(
 GS_SHEET_ID   = os.getenv("GOOGLE_SHEET_ID", "").strip()
 GS_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "submissions").strip()
 
-# 🔁 Mirror ayarları (yeni)
+# 🔁 Mirror ayarları
 MIRROR_TARGET_CHANNEL_ID  = int(os.getenv("MIRROR_TARGET_CHANNEL_ID", "0"))  # kopya mesajların gideceği kanal
 COMMUNITY_MANAGER_ROLE_ID = int(os.getenv("COMMUNITY_MANAGER_ROLE_ID", "0")) # @communitymanager rol ID
 # Birden çok botu desteklemek için virgüllü liste (örn: "159985870458322944,123456789012345678")
@@ -610,9 +611,12 @@ async def setup_register_slash(interaction: discord.Interaction):
     await interaction.response.send_message("Register post sent.", ephemeral=True)
 
 # ─────────────────────────────────────────────────────────────────────
-# MEE6 @communitymanager aynalama (yeni)
+# MEE6 @communitymanager aynalama (fixli)
 # ─────────────────────────────────────────────────────────────────────
 _mirrored_ids: set[int] = set()
+
+def MIRROR_BOT_USERIDS_OK() -> bool:
+    return len(MIRROR_BOT_USER_IDS) > 0
 
 @bot.event
 async def on_message(message: discord.Message):
@@ -645,12 +649,15 @@ async def on_message(message: discord.Message):
     if not target or not isinstance(target, (discord.TextChannel, discord.Thread)):
         return
 
-    # Embed oluştur
-    e = discord.Embed(color=0xFFD166, description=content[:4000] or "*(no text)*")
-    e.set_author(name=f"{message.author} • #{message.channel.name}", icon_url=getattr(message.author.display_avatar, 'url', discord.Embed.Empty))
+    # Embed oluştur (avatar None güvenlidir)
+    avatar_url = getattr(getattr(message.author, "display_avatar", None), "url", None)
+    chan_name  = getattr(message.channel, "name", None) or getattr(message.channel, "id", "unknown")
+
+    e = discord.Embed(color=0xFFD166, description=(content[:4000] or "*(no text)*"))
+    e.set_author(name=f"{message.author} • #{chan_name}", icon_url=avatar_url)
     e.add_field(name="Jump", value=f"[Go to message]({message.jump_url})", inline=False)
 
-    # Ekler varsa ilkini göster (çokluysa basitçe say)
+    # Ekler varsa ilkini göster (çokluysa sayıyı footera yaz)
     if message.attachments:
         att = message.attachments[0]
         if att.content_type and att.content_type.startswith("image/"):
@@ -664,22 +671,23 @@ async def on_message(message: discord.Message):
     except Exception as err:
         print("[MIRROR] send error:", err)
 
-def MIRROR_BOT_USERIDS_OK() -> bool:
-    return len(MIRROR_BOT_USER_IDS) > 0
-
 # ─────────────────────────────────────────────────────────────────────
 # on_ready
 # ─────────────────────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
-    # Sheet varsa header’ı garantile ve mevcut kayıtları belleğe yükle
+    # Sheet varsa header’a takılmadan preload
     _, ws = gs_client()
     if ws:
         try:
-            for r in ws.get_all_records():
-                uid = str(r.get("discord_user_id","")).strip()
-                if uid.isdigit():
-                    submitted_users.add(int(uid))
+            rows = ws.get_all_values()  # ham hücreler
+            # header varsa atla
+            if rows:
+                start = 1 if rows[0] and rows[0][0].strip().lower() == "discord_user_id" else 0
+                for row in rows[start:]:
+                    uid = (row[0] if len(row) > 0 else "").strip()
+                    if uid.isdigit():
+                        submitted_users.add(int(uid))
         except Exception as e:
             print("[GS] preload error:", repr(e))
 
